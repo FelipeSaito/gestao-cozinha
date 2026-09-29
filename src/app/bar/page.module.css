@@ -1,0 +1,164 @@
+/* Cores, fontes e medidas comuns vêm de globals.css.
+   Button e Input são responsáveis pelos seus próprios estilos. */
+.page {
+  display: grid;
+  gap: var(--space-6);
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+}
+.page h2 { font-size: var(--font-size-heading); }
+.page h3 { font-size: var(--font-size-title); }
+.page h4 { font-size: var(--font-size-large); }
+.demo {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+  border-radius: var(--radius-medium);
+  font-size: var(--font-size-small);
+}
+.heading, .sectionHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.heading > div { min-width: 0; }
+.heading p, .sectionHeading span { color: var(--color-text-secondary); }
+.back { margin-bottom: var(--space-2); }
+.actions { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--space-4); }
+.actionContent {
+  display: grid;
+  justify-items: start;
+  text-align: left;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+}
+.actionContent > svg { width: 30px; height: 30px; margin-bottom: var(--space-2); }
+.actionContent > strong { font-size: var(--font-size-large); }
+.actionContent > span { font-weight: var(--font-weight-normal); }
+.stock, .panel {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+  background: var(--color-surface);
+  min-width: 0;
+}
+.panel { max-width: 760px; width: 100%; margin: 0 auto; gap: var(--space-6); }
+.stock > button { justify-self: start; }
+.hint { color: var(--color-text-secondary); font-size: var(--font-size-small); }
+.cards { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--space-4); }
+.card {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  align-content: start;
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+}
+.card h4, .card p { overflow-wrap: anywhere; }
+.card p { color: var(--color-text-secondary); }
+.productIcon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-large);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.normal, .low {
+  justify-self: start;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-small);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-bold);
+}
+.normal { color: var(--color-success); background: var(--color-success-light); }
+.low { color: var(--color-warning); background: var(--color-warning-light); }
+.balance strong { color: var(--color-text-primary); font-size: var(--font-size-heading); }
+.cardButtons { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.cardButtons > button { flex: 1; }
+.empty { text-align: center; padding: var(--space-8) var(--space-4); color: var(--color-text-secondary); }
+.help {
+  padding: var(--space-5);
+  background: var(--color-info-light);
+  color: var(--color-info);
+  border-radius: var(--radius-medium);
+}
+.success {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--color-success-light);
+  color: var(--color-success);
+  padding: var(--space-5);
+  border-radius: var(--radius-medium);
+}
+.success svg { flex-shrink: 0; }
+.error {
+  padding: var(--space-4);
+  border: 2px solid var(--color-danger);
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+  border-radius: var(--radius-medium);
+}
+.productSummary { display: flex; gap: var(--space-4); align-items: center; }
+.productSummary svg { flex-shrink: 0; }
+/* Grupo específico de escolha da embalagem. */
+.options {
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.options legend { font-weight: var(--font-weight-bold); padding: 0 var(--space-2); }
+.options label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-secondary);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+.options input { width: 22px; height: 22px; flex-shrink: 0; accent-color: var(--color-primary); }
+.fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-5); }
+.total { background: var(--color-primary-light); padding: var(--space-5); border-radius: var(--radius-medium); font-size: var(--font-size-title); }
+.footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-3); padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
+.summary { margin: 0; display: grid; gap: var(--space-3); }
+.summary div { display: flex; justify-content: space-between; gap: var(--space-4); padding: var(--space-4); border-radius: var(--radius-medium); background: var(--color-surface-secondary); }
+.summary div:last-child { background: var(--color-success-light); color: var(--color-success); }
+.summary dd { margin: 0; font-weight: var(--font-weight-bold); text-align: right; }
+.history { margin: 0; padding-left: var(--space-6); display: grid; gap: var(--space-3); }
+@media (max-width: 1100px) {
+  .cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 650px) {
+  .page { gap: var(--space-4); }
+  .page h2 { font-size: var(--font-size-title); }
+  .actions, .cards, .fields { grid-template-columns: minmax(0,1fr); }
+  .actionContent { grid-template-columns: 30px minmax(0,1fr); column-gap: var(--space-4); }
+  .actionContent > svg { grid-row: span 2; margin: 0; align-self: center; }
+  .actionContent > span { grid-column: 2; }
+  .stock, .panel { padding: var(--space-4); }
+  .heading { align-items: flex-start; flex-wrap: wrap; }
+  .sectionHeading { flex-wrap: wrap; gap: var(--space-1); }
+  .sectionHeading span { font-size: var(--font-size-small); }
+  .footer { flex-direction: column; }
+  .footer > button { width: 100%; }
+  .summary div { flex-direction: column; gap: var(--space-2); }
+  .summary dd { text-align: left; }
+  .stock > button { width: 100%; }
+  .productSummary { align-items: flex-start; }
+}

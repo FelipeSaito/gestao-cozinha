@@ -1,0 +1,190 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+  max-width: 100%;
+
+  padding: var(--space-3) var(--space-5);
+
+  border: 1px solid transparent;
+  border-radius: var(--radius-medium);
+
+  font-family: var(--font-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-base);
+  text-align: center;
+  text-decoration: none;
+
+  vertical-align: middle;
+  cursor: pointer;
+  touch-action: manipulation;
+
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+/* Variações */
+
+.primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+
+.secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border-input);
+  color: var(--color-primary);
+}
+
+.success {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: var(--color-text-inverse);
+}
+
+.danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+
+.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-primary);
+}
+
+/* Efeito de mouse apenas em dispositivos compatíveis */
+
+@media (hover: hover) {
+  .primary:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
+  }
+
+  .secondary:hover:not(:disabled) {
+    background: var(--color-primary-light);
+    border-color: var(--color-primary);
+  }
+
+  .success:hover:not(:disabled) {
+    background: var(--color-success-hover);
+    border-color: var(--color-success-hover);
+  }
+
+  .danger:hover:not(:disabled) {
+    background: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
+  }
+
+  .ghost:hover:not(:disabled) {
+    background: var(--color-primary-light);
+  }
+}
+
+/* Tamanhos: todos preservam a área mínima de toque */
+
+.small {
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+}
+
+.medium {
+  min-height: var(--input-height);
+  padding: var(--space-3) var(--space-5);
+}
+
+.large {
+  min-height: 56px;
+  padding: var(--space-4) var(--space-6);
+  font-size: var(--font-size-large);
+}
+
+.fullWidth {
+  width: 100%;
+}
+
+/* Conteúdo */
+
+.label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.large .icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Foco */
+
+.button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
+/* Desabilitado */
+
+.button:disabled {
+  background: var(--color-disabled-background);
+  border-color: var(--color-disabled-border);
+  color: var(--color-disabled-text);
+  cursor: not-allowed;
+}
+
+/* Carregamento */
+
+.button.loading {
+  cursor: progress;
+}
+
+.spinner {
+  display: inline-block;
+  flex-shrink: 0;
+
+  width: 20px;
+  height: 20px;
+
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+
+  animation: button-spin 800ms linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+
+  .spinner {
+    animation: none;
+  }
+}

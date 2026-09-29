@@ -1,0 +1,24 @@
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+  box-shadow: var(--shadow-small);
+}
+
+.secondary {
+  background: var(--color-surface-secondary);
+  border-color: color-mix(in srgb, var(--color-primary) 10%, var(--color-border));
+}
+
+.padding-none {
+  padding: 0;
+}
+.padding-small {
+  padding: 12px;
+}
+.padding-medium {
+  padding: 18px;
+}
+.padding-large {
+  padding: 24px;
+}

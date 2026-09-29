@@ -1,0 +1,184 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+
+  width: 100%;
+  min-width: 0;
+}
+
+/* Rótulo sempre visível */
+
+.label {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-base);
+
+  overflow-wrap: anywhere;
+}
+
+.required {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-normal);
+}
+
+/* Estrutura do campo */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+
+  width: 100%;
+  min-width: 0;
+  min-height: var(--input-height);
+
+  padding: 0 var(--space-3);
+
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-medium);
+
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+/* O destaque envolve todo o campo */
+
+.field:focus-within {
+  border-color: var(--color-focus);
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
+.input {
+  flex: 1;
+
+  width: 100%;
+  min-width: 0;
+  min-height: var(--input-height);
+
+  padding: var(--space-3) 0;
+
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+
+  color: var(--color-text-primary);
+  font-family: var(--font-primary);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+}
+
+/* O foco permanece visível na estrutura .field */
+
+.input:focus,
+.input:focus-visible {
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--color-text-muted);
+  opacity: 1;
+}
+
+/* Ícone decorativo */
+
+.leftIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.leftIcon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+/* Conteúdo à direita */
+
+.rightSlot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.rightSlot button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+}
+
+.rightSlot button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Erro acompanhado de mensagem textual */
+
+.fieldError {
+  border-color: var(--color-danger);
+}
+
+.fieldError:focus-within {
+  border-color: var(--color-danger);
+}
+
+.error {
+  margin: 0;
+
+  color: var(--color-danger);
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-base);
+
+  overflow-wrap: anywhere;
+}
+
+/* Orientação permanece visível mesmo com erro */
+
+.hint {
+  margin: 0;
+
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-base);
+
+  overflow-wrap: anywhere;
+}
+
+/* Desabilitado */
+
+.fieldDisabled {
+  background: var(--color-disabled-background);
+  border-color: var(--color-disabled-border);
+}
+
+.input:disabled {
+  color: var(--color-disabled-text);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.input:disabled::placeholder {
+  color: var(--color-disabled-text);
+}
+
+/* Menos movimento */
+
+@media (prefers-reduced-motion: reduce) {
+  .field {
+    transition: none;
+  }
+}

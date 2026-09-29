@@ -1,0 +1,12 @@
+.formulario { display: grid; gap: 20px; }
+.formulario p { margin: 0; color: var(--color-text-secondary); }
+.grade { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.campo { display: grid; align-content: start; gap: 8px; min-width: 0; font-weight: 600; }
+.campo input, .campo select {
+  width: 100%; min-height: 44px; padding: 10px 12px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-medium);
+  background: var(--color-surface); color: var(--color-text-primary);
+  font: inherit; font-weight: 400;
+}
+.campo input:focus-visible, .campo select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+@media (max-width: 700px) { .grade { grid-template-columns: minmax(0, 1fr); } }

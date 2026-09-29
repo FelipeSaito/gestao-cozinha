@@ -1,0 +1,85 @@
+import type { Transfer } from "@/types";
+
+export const transferenciasPendentes: Transfer[] = [
+  {
+    id: "trf-1",
+    codigo: "TRF-2026-0912",
+    origem: "Estoque principal",
+    destino: "Estoque da cozinha",
+    responsavel: "Carlos Almeida",
+    criadaEm: "2026-09-11",
+    status: "pendente",
+    itens: [
+      {
+        id: "it-1",
+        produtoId: "prod-1",
+        nome: "Carne moída",
+        lote: "CAR-260901",
+        unidade: "kg",
+        quantidadeEnviada: 10,
+      },
+      {
+        id: "it-2",
+        produtoId: "prod-2",
+        nome: "Queijo muçarela",
+        lote: "QUE-260905",
+        unidade: "kg",
+        quantidadeEnviada: 4,
+      },
+      {
+        id: "it-3",
+        produtoId: "prod-3",
+        nome: "Massa para pastel",
+        lote: "MAS-260904",
+        unidade: "kg",
+        quantidadeEnviada: 15,
+      },
+    ],
+  },
+  {
+    id: "trf-2",
+    codigo: "TRF-2026-0911",
+    origem: "Estoque principal",
+    destino: "Estoque da cozinha",
+    responsavel: "Carlos Almeida",
+    criadaEm: "2026-09-11",
+    status: "pendente",
+    itens: [
+      {
+        id: "it-4",
+        produtoId: "prod-4",
+        nome: "Óleo de soja",
+        lote: "OLE-260820",
+        unidade: "litros",
+        quantidadeEnviada: 4,
+      },
+      {
+        id: "it-5",
+        produtoId: "prod-5",
+        nome: "Presunto",
+        lote: "PRE-260902",
+        unidade: "kg",
+        quantidadeEnviada: 2,
+      },
+    ],
+  },
+  {
+    id: "trf-3",
+    codigo: "TRF-2026-0910",
+    origem: "Estoque principal",
+    destino: "Estoque da cozinha",
+    responsavel: "Carlos Almeida",
+    criadaEm: "2026-09-10",
+    status: "pendente",
+    itens: [
+      {
+        id: "it-6",
+        produtoId: "prod-3",
+        nome: "Massa para pastel",
+        lote: "MAS-260904",
+        unidade: "kg",
+        quantidadeEnviada: 20,
+      },
+    ],
+  },
+];

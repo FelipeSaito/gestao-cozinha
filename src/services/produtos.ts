@@ -1,0 +1,66 @@
+import type { Product, StockIndicators } from "@/types";
+
+export const indicadores: StockIndicators = {
+  totalInsumos: 48,
+  estoqueBaixo: 6,
+  proximosVencimento: 4,
+  valorEstimado: 18450,
+};
+
+export const produtos: Product[] = [
+  {
+    id: "prod-1",
+    nome: "Carne moída",
+    categoria: "Carnes",
+    lote: "CAR-260901",
+    validade: "2026-09-18",
+    quantidade: 20,
+    unidade: "kg",
+    custoUnitario: 27.5,
+    situacao: "normal",
+  },
+  {
+    id: "prod-2",
+    nome: "Queijo muçarela",
+    categoria: "Laticínios",
+    lote: "QUE-260905",
+    validade: "2026-09-15",
+    quantidade: 8,
+    unidade: "kg",
+    custoUnitario: 34.9,
+    situacao: "proximo-vencimento",
+  },
+  {
+    id: "prod-3",
+    nome: "Massa para pastel",
+    categoria: "Massas",
+    lote: "MAS-260904",
+    validade: "2026-09-30",
+    quantidade: 45,
+    unidade: "kg",
+    custoUnitario: 8.5,
+    situacao: "normal",
+  },
+  {
+    id: "prod-4",
+    nome: "Óleo de soja",
+    categoria: "Óleos",
+    lote: "OLE-260820",
+    validade: "2026-09-12",
+    quantidade: 6,
+    unidade: "litros",
+    custoUnitario: 7.9,
+    situacao: "estoque-baixo",
+  },
+  {
+    id: "prod-5",
+    nome: "Presunto",
+    categoria: "Frios",
+    lote: "PRE-260902",
+    validade: "2026-09-10",
+    quantidade: 3,
+    unidade: "kg",
+    custoUnitario: 22.0,
+    situacao: "vencido",
+  },
+];

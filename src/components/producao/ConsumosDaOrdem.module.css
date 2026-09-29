@@ -1,0 +1,7 @@
+.container { border-top: 1px solid var(--color-border); padding-top: 12px; }
+.toggle { width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-medium); background: var(--color-surface); color: var(--color-text-primary); cursor: pointer; font: inherit; font-weight: 600; }
+.content { margin-top: 12px; }
+.content p { margin: 0; }
+.list { list-style: none; display: grid; gap: 10px; padding: 0; margin: 0; }
+.list li { display: grid; gap: 3px; padding: 10px 0; border-top: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.list span { color: var(--color-text-secondary); }

@@ -1,0 +1,14 @@
+.card { margin-top: 24px; padding: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-large, 16px); background: var(--color-surface, #fff); color: var(--color-text-primary); }
+.heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.heading h2 { margin: 0 0 6px; font-size: 20px; }
+.heading p { margin: 0; color: var(--color-text-secondary); }
+.registro { border-top: 1px solid var(--color-border); }
+.registro summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 16px 4px; cursor: pointer; }
+.registro summary:hover { background: var(--color-primary-light, #f4f7fb); }
+.registro time { color: var(--color-text-secondary); }
+.conteudo { padding: 0 4px 16px; }
+.conteudo p { margin: 8px 0; }
+.conteudo ul { margin: 12px 0 0; padding-left: 20px; }
+.conteudo li { margin: 12px 0; }
+.error { color: #b42318; }
+@media (max-width: 700px) { .card { padding: 16px; } .registro summary { display: grid; } }
