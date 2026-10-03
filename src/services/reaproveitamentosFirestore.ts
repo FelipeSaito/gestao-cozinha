@@ -103,8 +103,10 @@ export async function salvarReaproveitamentoFirestore(
       const saborId = origem.slice(indice + 1);
       const fechamentoRef = doc(db, "fechamentosFeira", feiraOrigem);
       const saldoRef = doc(db, "saldoSobrasFeira", origem);
+      const descarteRef = doc(db, "descartesFeira", origem);
       const fechamento = await transacao.get(fechamentoRef);
       const saldo = await transacao.get(saldoRef);
+      const descarte = await transacao.get(descarteRef);
       if (!fechamento.exists()) throw new Error(`Fechamento de ${feiraOrigem} não encontrado.`);
       const item = (fechamento.data().itens as ItemRetorno[]).find((i) => i.saborId === saborId);
       if (!item || feiraOrigem.slice(0, 10) >= destino.slice(0, 10)) {
@@ -112,7 +114,9 @@ export async function salvarReaproveitamentoFirestore(
       }
       const alocacoes = saldo.exists() ? saldo.data().alocacoes : {};
       if (!destinosValidos(alocacoes)) throw new Error("Saldo do lote inválido.");
-      lotes.push({ origem, item, fechamentoRef, saldoRef, fechamento, alocacoes });
+      const descartados = descarte.exists() ? descarte.data().quantidade : 0;
+      if (!Number.isSafeInteger(descartados) || descartados < 0) throw new Error("Descarte inválido.");
+      lotes.push({ origem, item, fechamentoRef, saldoRef, fechamento, alocacoes, descartados });
     }
     const sabores = plano.data().itens as SaborPlanejado[];
     if (!Array.isArray(sabores)) throw new Error("Planejamento inválido.");
@@ -121,7 +125,7 @@ export async function salvarReaproveitamentoFirestore(
       const novoValor = propostos[lote.origem] ?? 0;
       const outrasFeiras = Object.entries(lote.alocacoes).reduce((soma, [chave, quantidade]) =>
         soma + (chave === destino ? 0 : quantidade), 0);
-      if (novoValor + outrasFeiras > lote.item.sobraram ||
+      if (novoValor + outrasFeiras + lote.descartados > lote.item.sobraram ||
         (novoValor > 0 && !sabores.some((s) => nomeNormalizado(s.nome) === nomeNormalizado(lote.item.nome)))) {
         throw new Error(`Saldo insuficiente ou sabor incompatível: ${lote.item.nome}. Atualize a página e revise.`);
       }
