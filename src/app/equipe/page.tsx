@@ -168,11 +168,19 @@ export default function EquipePage() {
 
   useEffect(() => {
     if (
-      !carregando &&
-      usuario?.perfis.includes("dono")
+      carregando ||
+      !usuario?.perfis.includes("dono")
     ) {
-      void carregarFuncionarios();
+      return;
     }
+
+    const temporizador = window.setTimeout(() => {
+      void carregarFuncionarios();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(temporizador);
+    };
   }, [
     carregando,
     usuario,

@@ -1,801 +1,510 @@
-import { NextResponse, type NextRequest } from "next/server";
+import {
+  NextResponse,
+  type NextRequest,
+} from "next/server";
+
 import { firebaseAdmin } from "@/lib/firebase-admin";
-import { produtos as produtosExemplo } from "@/services/produtos";
-import type { Product, Transfer } from "@/types";
+import type { Product } from "@/types";
 
 export const runtime = "nodejs";
 
-const PRINCIPAL = "estoquePrincipal";
-const COZINHA = "estoqueCozinha";
-const TRANSFERENCIAS = "transferenciasEstoque";
+type Entrada = {
+  operacaoId?: unknown;
+  nome?: unknown;
+  categoria?: unknown;
+  lote?: unknown;
+  validade?: unknown;
+  quantidade?: unknown;
+  unidade?: unknown;
+  custoUnitario?: unknown;
+};
 
-type Acao =
-  | { acao: "inicializarExemplos" }
-  | {
-      acao: "criar";
-      produtoId: string;
-      quantidade: number;
-      observacao?: string;
-    }
-  | {
-      acao: "receber";
-      transferenciaId: string;
-      itens: {
-        itemId: string;
-        quantidadeRecebida: number;
-        recebidoCorretamente: boolean;
-        observacao?: string;
-      }[];
-    }
-  | { acao: "cancelar"; transferenciaId: string };
-
-function responderErro(mensagem: string, status: number) {
-  return NextResponse.json({ erro: mensagem }, { status });
+function falha(
+  erro: string,
+  status: number,
+) {
+  return NextResponse.json(
+    { erro },
+    { status },
+  );
 }
 
-function dataHoje() {
-  const partes = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
+function texto(
+  valor: unknown,
+  maximo: number,
+): valor is string {
+  return (
+    typeof valor === "string" &&
+    valor.trim().length > 0 &&
+    valor.trim().length <= maximo
+  );
+}
 
-  const obter = (tipo: string) =>
-    partes.find((parte) => parte.type === tipo)?.value;
+function numero(
+  valor: unknown,
+  casas: number,
+  permiteZero: boolean,
+): valor is number {
+  if (
+    typeof valor !== "number" ||
+    !Number.isFinite(valor) ||
+    valor > 1_000_000 ||
+    (permiteZero
+      ? valor < 0
+      : valor <= 0)
+  ) {
+    return false;
+  }
 
-  return `${obter("year")}-${obter("month")}-${obter("day")}`;
+  const fator = 10 ** casas;
+
+  return (
+    Math.abs(
+      valor * fator -
+        Math.round(valor * fator),
+    ) < 1e-7
+  );
+}
+
+function dataValida(
+  valor: unknown,
+): valor is string {
+  if (
+    typeof valor !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      valor,
+    )
+  ) {
+    return false;
+  }
+
+  const [ano, mes, dia] = valor
+    .split("-")
+    .map(Number);
+
+  const data = new Date(
+    Date.UTC(
+      ano,
+      mes - 1,
+      dia,
+    ),
+  );
+
+  return (
+    data.getUTCFullYear() === ano &&
+    data.getUTCMonth() === mes - 1 &&
+    data.getUTCDate() === dia
+  );
+}
+
+function hojeBrasil() {
+  const partes =
+    new Intl.DateTimeFormat(
+      "en-CA",
+      {
+        timeZone:
+          "America/Sao_Paulo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      },
+    ).formatToParts(new Date());
+
+  const campo = (tipo: string) =>
+    partes.find(
+      (parte) =>
+        parte.type === tipo,
+    )?.value;
+
+  return `${campo("year")}-${campo("month")}-${campo("day")}`;
 }
 
 function situacao(
   quantidade: number,
   validade: string,
 ): Product["situacao"] {
-  if (validade < dataHoje()) return "vencido";
+  const hoje = hojeBrasil();
 
-  const hoje = new Date(`${dataHoje()}T12:00:00Z`).getTime();
-  const fim = new Date(`${validade}T12:00:00Z`).getTime();
+  if (validade < hoje) {
+    return "vencido";
+  }
 
-  if ((fim - hoje) / 86400000 <= 7) {
+  const dias =
+    (Date.parse(
+      `${validade}T12:00:00Z`,
+    ) -
+      Date.parse(
+        `${hoje}T12:00:00Z`,
+      )) /
+    86_400_000;
+
+  if (dias <= 7) {
     return "proximo-vencimento";
   }
 
-  if (quantidade <= 5) return "estoque-baixo";
+  if (quantidade <= 5) {
+    return "estoque-baixo";
+  }
 
   return "normal";
 }
 
-function quantidadeValida(valor: unknown): valor is number {
-  return (
-    typeof valor === "number" &&
-    Number.isFinite(valor) &&
-    valor > 0 &&
-    valor <= 1000000 &&
-    Math.round(valor * 1000) === valor * 1000
-  );
-}
-
-async function identificar(request: NextRequest) {
-  const token = /^Bearer (\S+)$/.exec(
-    request.headers.get("authorization") ?? "",
-  )?.[1];
-
-  if (!token) return null;
-
-  const { auth, db } = firebaseAdmin();
-
-  try {
-    const sessao = await auth.verifyIdToken(token, true);
-    const perfil = (
-      await db.collection("perfis").doc(sessao.uid).get()
-    ).data();
-
-    if (!perfil) return null;
-
-    const perfis: string[] = Array.isArray(perfil.perfis)
-      ? perfil.perfis
-      : typeof perfil.perfil === "string"
-        ? [perfil.perfil]
-        : [];
-
-    return {
-      uid: sessao.uid,
-      nome:
-        typeof perfil.nome === "string"
-          ? perfil.nome
-          : "Funcionário",
-      perfis,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function autorizado(
-  perfis: string[],
-  acao: Acao["acao"],
+export async function POST(
+  request: NextRequest,
 ) {
-  if (perfis.includes("dono")) return true;
-
-  if (acao === "inicializarExemplos") {
-    return false;
-  }
-
-  if (acao === "criar" || acao === "cancelar") {
-    return perfis.includes("administracao");
-  }
-
-  return (
-    perfis.includes("producao") ||
-    perfis.includes("administracao")
-  );
-}
-
-export async function GET(request: NextRequest) {
-  const pessoa = await identificar(request);
-
-  if (!pessoa) {
-    return responderErro("Sessão inválida.", 401);
-  }
-
-  if (
-    !pessoa.perfis.some((perfil) =>
-      ["dono", "administracao", "producao"].includes(
-        perfil,
-      ),
-    )
-  ) {
-    return responderErro("Acesso negado.", 403);
-  }
-
-  try {
-    const { db } = firebaseAdmin();
-
-    const [principal, cozinha, transferencias] =
-      await Promise.all([
-        db.collection(PRINCIPAL).get(),
-        db.collection(COZINHA).get(),
-        db
-          .collection(TRANSFERENCIAS)
-          .where("status", "==", "pendente")
-          .get(),
-      ]);
-
-    return NextResponse.json({
-      produtos: principal.docs.map((doc) => {
-        const produto = doc.data() as Product;
-
-        return {
-          ...produto,
-          id: doc.id,
-          situacao: situacao(
-            produto.quantidade,
-            produto.validade,
-          ),
-        };
-      }),
-
-      estoqueCozinha: cozinha.docs.map((doc) => {
-        const produto = doc.data() as Product;
-
-        return {
-          ...produto,
-          id: doc.id,
-          situacao: situacao(
-            produto.quantidade,
-            produto.validade,
-          ),
-        };
-      }),
-
-      transferencias: transferencias.docs.map((doc) => ({
-        ...doc.data(),
-        id: doc.id,
-      })),
-    });
-  } catch {
-    return responderErro(
-      "Não foi possível carregar o inventário.",
-      500,
-    );
-  }
-}
-
-export async function POST(request: NextRequest) {
-  const pessoa = await identificar(request);
-
-  if (!pessoa) {
-    return responderErro("Sessão inválida.", 401);
-  }
-
   if (
     !request.headers
       .get("content-type")
-      ?.startsWith("application/json")
+      ?.startsWith(
+        "application/json",
+      )
   ) {
-    return responderErro("Envie dados em JSON.", 415);
+    return falha(
+      "Envie os dados em JSON.",
+      415,
+    );
   }
 
-  let dados: Acao;
+  const token =
+    /^Bearer (\S+)$/.exec(
+      request.headers.get(
+        "authorization",
+      ) ?? "",
+    )?.[1];
+
+  if (!token) {
+    return falha(
+      "Faça login para registrar uma entrada.",
+      401,
+    );
+  }
+
+  const { auth, db } =
+    firebaseAdmin();
+
+  let uid: string;
 
   try {
-    dados = await request.json();
+    uid = (
+      await auth.verifyIdToken(
+        token,
+        true,
+      )
+    ).uid;
   } catch {
-    return responderErro("Dados inválidos.", 400);
+    return falha(
+      "Sessão inválida.",
+      401,
+    );
   }
-
-  if (
-    !dados ||
-    ![
-      "inicializarExemplos",
-      "criar",
-      "receber",
-      "cancelar",
-    ].includes(dados.acao)
-  ) {
-    return responderErro("Ação inválida.", 400);
-  }
-
-  if (!autorizado(pessoa.perfis, dados.acao)) {
-    return responderErro("Acesso negado.", 403);
-  }
-
-  const { db } = firebaseAdmin();
 
   try {
-    if (dados.acao === "inicializarExemplos") {
-      const trava = db
-        .collection("inventarioConfig")
-        .doc("inicializacao");
+    const perfil = (
+      await db
+        .collection("perfis")
+        .doc(uid)
+        .get()
+    ).data();
 
-      await db.runTransaction(async (tx) => {
-        const [marcador, existentes] =
-          await Promise.all([
-            tx.get(trava),
-            tx.get(
-              db.collection(PRINCIPAL).limit(1),
+    const perfis = Array.isArray(
+      perfil?.perfis,
+    )
+      ? perfil.perfis
+      : [];
+
+    const autorizado =
+      perfil?.perfil === "dono" ||
+      perfil?.perfil ===
+        "administracao" ||
+      perfis.includes("dono") ||
+      perfis.includes(
+        "administracao",
+      );
+
+    if (!autorizado) {
+      return falha(
+        "Você não tem permissão para registrar entradas.",
+        403,
+      );
+    }
+
+    let entrada: Entrada;
+
+    try {
+      entrada =
+        await request.json();
+    } catch {
+      return falha(
+        "Dados inválidos.",
+        400,
+      );
+    }
+
+    if (
+      !entrada ||
+      !texto(
+        entrada.nome,
+        120,
+      ) ||
+      !texto(
+        entrada.categoria,
+        80,
+      ) ||
+      !texto(
+        entrada.lote,
+        80,
+      ) ||
+      !texto(
+        entrada.unidade,
+        30,
+      ) ||
+      !dataValida(
+        entrada.validade,
+      ) ||
+      !numero(
+        entrada.quantidade,
+        3,
+        false,
+      ) ||
+      !numero(
+        entrada.custoUnitario,
+        4,
+        true,
+      ) ||
+      typeof entrada.operacaoId !==
+        "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(
+        entrada.operacaoId,
+      )
+    ) {
+      return falha(
+        "Confira nome, categoria, lote, validade, quantidade e custo.",
+        400,
+      );
+    }
+
+    const nome =
+      entrada.nome.trim();
+
+    const categoria =
+      entrada.categoria.trim();
+
+    const lote =
+      entrada.lote.trim();
+
+    const unidade =
+      entrada.unidade.trim();
+
+    const validade =
+      entrada.validade;
+
+    const quantidade =
+      entrada.quantidade;
+
+    const custoUnitario =
+      entrada.custoUnitario;
+
+    const operacaoId =
+      entrada.operacaoId;
+
+    const movimentoRef = db
+      .collection(
+        "movimentacoesEstoque",
+      )
+      .doc(operacaoId);
+
+    const produtoNovoRef = db
+      .collection(
+        "estoquePrincipal",
+      )
+      .doc();
+
+    const resultado =
+      await db.runTransaction(
+        async (transacao) => {
+          const [
+            movimento,
+            mesmoLote,
+          ] = await Promise.all([
+            transacao.get(
+              movimentoRef,
+            ),
+            transacao.get(
+              db
+                .collection(
+                  "estoquePrincipal",
+                )
+                .where(
+                  "lote",
+                  "==",
+                  lote,
+                ),
             ),
           ]);
 
-        if (
-          marcador.exists ||
-          !existentes.empty
-        ) {
-          throw new Error(
-            "O estoque já foi inicializado.",
-          );
-        }
-
-        for (const produto of produtosExemplo) {
-          const { id, ...campos } = produto;
-
-          tx.create(
-            db.collection(PRINCIPAL).doc(id),
-            {
-              ...campos,
-              situacao: situacao(
-                produto.quantidade,
-                produto.validade,
-              ),
-            },
-          );
-        }
-
-        tx.create(trava, {
-          inicializadoPor: pessoa.uid,
-          inicializadoEm: new Date(),
-        });
-      });
-
-      return NextResponse.json({ ok: true });
-    }
-
-    if (dados.acao === "criar") {
-      if (
-        !/^[a-zA-Z0-9-]{1,100}$/.test(
-          dados.produtoId ?? "",
-        ) ||
-        !quantidadeValida(dados.quantidade) ||
-        (dados.observacao !== undefined &&
-          (typeof dados.observacao !==
-            "string" ||
-            dados.observacao.length > 500))
-      ) {
-        return responderErro(
-          "Confira o produto, a quantidade e a observação.",
-          400,
-        );
-      }
-
-      const produtoRef = db
-        .collection(PRINCIPAL)
-        .doc(dados.produtoId);
-
-      const transferenciaRef = db
-        .collection(TRANSFERENCIAS)
-        .doc();
-
-      await db.runTransaction(async (tx) => {
-        const snapshot =
-          await tx.get(produtoRef);
-
-        if (!snapshot.exists) {
-          throw new Error(
-            "Produto não encontrado.",
-          );
-        }
-
-        const produto =
-          snapshot.data() as Product;
-
-        if (
-          !Number.isFinite(
-            produto.quantidade,
-          ) ||
-          produto.quantidade <
-            dados.quantidade
-        ) {
-          throw new Error(
-            "Quantidade maior que o saldo disponível.",
-          );
-        }
-
-        if (
-          produto.validade < dataHoje()
-        ) {
-          throw new Error(
-            "Produto vencido não pode ser transferido.",
-          );
-        }
-
-        const restante =
-          Math.round(
-            (produto.quantidade -
-              dados.quantidade) *
-              1000,
-          ) / 1000;
-
-        const transferencia: Transfer = {
-          id: transferenciaRef.id,
-          codigo: `TRF-${Date.now()}-${transferenciaRef.id.slice(0, 5)}`,
-          origem: "Estoque principal",
-          destino: "Estoque da cozinha",
-          responsavel: pessoa.nome,
-          criadaEm: dataHoje(),
-          status: "pendente",
-          itens: [
-            {
-              id: crypto.randomUUID(),
-              produtoId: snapshot.id,
-              nome: produto.nome,
-              lote: produto.lote,
-              unidade: produto.unidade,
-              quantidadeEnviada:
-                dados.quantidade,
-            },
-          ],
-          ...(dados.observacao?.trim()
-            ? {
-                observacao:
-                  dados.observacao.trim(),
-              }
-            : {}),
-        };
-
-        tx.update(produtoRef, {
-          quantidade: restante,
-          situacao: situacao(
-            restante,
-            produto.validade,
-          ),
-        });
-
-        tx.create(transferenciaRef, {
-          ...transferencia,
-          criadoPorId: pessoa.uid,
-        });
-      });
-
-      return NextResponse.json({
-        ok: true,
-        id: transferenciaRef.id,
-      });
-    }
-
-    if (
-      !/^[a-zA-Z0-9-]{1,100}$/.test(
-        dados.transferenciaId ?? "",
-      )
-    ) {
-      return responderErro(
-        "Transferência inválida.",
-        400,
-      );
-    }
-
-    const transferenciaRef = db
-      .collection(TRANSFERENCIAS)
-      .doc(dados.transferenciaId);
-
-    if (dados.acao === "cancelar") {
-      await db.runTransaction(
-        async (tx) => {
-          const registro =
-            await tx.get(
-              transferenciaRef,
-            );
-
-          if (
-            !registro.exists ||
-            registro.data()?.status !==
-              "pendente"
-          ) {
-            throw new Error(
-              "A transferência já foi encerrada ou não existe.",
-            );
-          }
-
-          const transferencia =
-            registro.data() as Transfer;
-
-          const referencias =
-            transferencia.itens.map(
-              (item) =>
-                db
-                  .collection(PRINCIPAL)
-                  .doc(item.produtoId),
-            );
-
-          const produtos =
-            await Promise.all(
-              referencias.map((ref) =>
-                tx.get(ref),
-              ),
-            );
-
-          for (
-            let i = 0;
-            i < produtos.length;
-            i++
-          ) {
-            const atual =
-              produtos[i].data() as
-                | Product
-                | undefined;
-
-            const item =
-              transferencia.itens[i];
-
+          if (movimento.exists) {
             if (
-              !atual ||
-              atual.lote !== item.lote
+              movimento.data()
+                ?.registradoPorId !==
+              uid
             ) {
               throw new Error(
-                "Produto ou lote de origem não encontrado.",
+                "Identificador de operação já utilizado.",
               );
             }
 
-            const quantidade =
+            return {
+              id: movimento.data()
+                ?.produtoId as string,
+              repetida: true,
+            };
+          }
+
+          const encontrados =
+            mesmoLote.docs.filter(
+              (documento) =>
+                String(
+                  documento.data()
+                    .nome,
+                )
+                  .trim()
+                  .toLocaleLowerCase(
+                    "pt-BR",
+                  ) ===
+                nome.toLocaleLowerCase(
+                  "pt-BR",
+                ),
+            );
+
+          if (
+            encontrados.length > 1
+          ) {
+            throw new Error(
+              "Existem dois produtos com esse nome e lote; corrija o cadastro antes da entrada.",
+            );
+          }
+
+          const existente =
+            encontrados[0];
+
+          let produtoId: string;
+          let saldoAnterior = 0;
+          let saldoNovo =
+            quantidade;
+
+          if (existente) {
+            const anterior =
+              existente.data() as Product;
+
+            if (
+              anterior.validade !==
+                validade ||
+              anterior.unidade !==
+                unidade ||
+              anterior.categoria !==
+                categoria ||
+              !Number.isFinite(
+                anterior.quantidade,
+              ) ||
+              !Number.isFinite(
+                anterior.custoUnitario,
+              )
+            ) {
+              throw new Error(
+                "O produto já existe com esse lote, mas os dados não correspondem.",
+              );
+            }
+
+            produtoId =
+              existente.id;
+
+            saldoAnterior =
+              anterior.quantidade;
+
+            saldoNovo =
               Math.round(
-                (atual.quantidade +
-                  item.quantidadeEnviada) *
+                (saldoAnterior +
+                  quantidade) *
                   1000,
               ) / 1000;
 
-            tx.update(
-              referencias[i],
+            const custoMedio =
+              Math.round(
+                ((saldoAnterior *
+                  anterior.custoUnitario +
+                  quantidade *
+                    custoUnitario) /
+                  saldoNovo) *
+                  10_000,
+              ) / 10_000;
+
+            transacao.update(
+              existente.ref,
               {
+                quantidade:
+                  saldoNovo,
+                custoUnitario:
+                  custoMedio,
+                situacao: situacao(
+                  saldoNovo,
+                  validade,
+                ),
+              },
+            );
+          } else {
+            produtoId =
+              produtoNovoRef.id;
+
+            transacao.create(
+              produtoNovoRef,
+              {
+                nome,
+                categoria,
+                lote,
+                validade,
                 quantidade,
+                unidade,
+                custoUnitario,
                 situacao: situacao(
                   quantidade,
-                  atual.validade,
+                  validade,
                 ),
               },
             );
           }
 
-          tx.update(
-            transferenciaRef,
+          transacao.create(
+            movimentoRef,
             {
-              status: "cancelada",
-              canceladoPorId:
-                pessoa.uid,
-              canceladoEm:
+              produtoId,
+              quantidade,
+              saldoAnterior,
+              saldoNovo,
+              custoUnitario,
+              lote,
+              registradoPorId:
+                uid,
+              registradoEm:
                 new Date(),
             },
           );
+
+          return {
+            id: produtoId,
+            repetida: false,
+          };
         },
       );
 
-      return NextResponse.json({
-        ok: true,
-      });
-    }
-
-    if (
-      !Array.isArray(dados.itens) ||
-      dados.itens.length === 0 ||
-      dados.itens.length > 40
-    ) {
-      return responderErro(
-        "Informe os itens recebidos.",
-        400,
-      );
-    }
-
-    await db.runTransaction(
-      async (tx) => {
-        const registro =
-          await tx.get(
-            transferenciaRef,
-          );
-
-        if (
-          !registro.exists ||
-          registro.data()?.status !==
-            "pendente"
-        ) {
-          throw new Error(
-            "A transferência já foi recebida ou não existe.",
-          );
-        }
-
-        const transferencia =
-          registro.data() as Transfer;
-
-        if (
-          dados.itens.length !==
-            transferencia.itens
-              .length ||
-          new Set(
-            dados.itens.map(
-              (item) =>
-                item.itemId,
-            ),
-          ).size !==
-            dados.itens.length
-        ) {
-          throw new Error(
-            "Confira todos os itens da transferência.",
-          );
-        }
-
-        const checados =
-          transferencia.itens.map(
-            (item) => {
-              const recebido =
-                dados.itens.find(
-                  (entrada) =>
-                    entrada.itemId ===
-                    item.id,
-                );
-
-              if (
-                !recebido ||
-                typeof recebido.quantidadeRecebida !==
-                  "number" ||
-                !Number.isFinite(
-                  recebido.quantidadeRecebida,
-                ) ||
-                recebido.quantidadeRecebida <
-                  0 ||
-                Math.round(
-                  recebido.quantidadeRecebida *
-                    1000,
-                ) !==
-                  recebido.quantidadeRecebida *
-                    1000 ||
-                recebido.quantidadeRecebida >
-                  item.quantidadeEnviada ||
-                typeof recebido.recebidoCorretamente !==
-                  "boolean"
-              ) {
-                throw new Error(
-                  `Quantidade inválida para ${item.nome}.`,
-                );
-              }
-
-              const divergencia =
-                !recebido.recebidoCorretamente ||
-                recebido.quantidadeRecebida !==
-                  item.quantidadeEnviada;
-
-              if (
-                divergencia &&
-                (typeof recebido.observacao !==
-                  "string" ||
-                  !recebido.observacao.trim() ||
-                  recebido.observacao.length >
-                    500)
-              ) {
-                throw new Error(
-                  `Justifique a divergência de ${item.nome}.`,
-                );
-              }
-
-              return {
-                item,
-                recebido,
-                divergencia,
-              };
-            },
-          );
-
-        const referencias =
-          checados.map(
-            ({ item }) => ({
-              principal: db
-                .collection(
-                  PRINCIPAL,
-                )
-                .doc(
-                  item.produtoId,
-                ),
-              cozinha: db
-                .collection(
-                  COZINHA,
-                )
-                .doc(
-                  item.produtoId,
-                ),
-            }),
-          );
-
-        const originais =
-          await Promise.all(
-            referencias.map(
-              ({
-                principal,
-              }) =>
-                tx.get(
-                  principal,
-                ),
-            ),
-          );
-
-        const destinos =
-          await Promise.all(
-            referencias.map(
-              ({
-                cozinha,
-              }) =>
-                tx.get(
-                  cozinha,
-                ),
-            ),
-          );
-
-        for (
-          let i = 0;
-          i <
-          checados.length;
-          i++
-        ) {
-          const {
-            item,
-            recebido,
-          } =
-            checados[i];
-
-          const original =
-            originais[
-              i
-            ].data() as
-              | Product
-              | undefined;
-
-          if (
-            !original ||
-            original.lote !==
-              item.lote ||
-            original.unidade !==
-              item.unidade
-          ) {
-            throw new Error(
-              `Produto ou lote de ${item.nome} não encontrado.`,
-            );
-          }
-
-          const destino =
-            destinos[
-              i
-            ].data() as
-              | Product
-              | undefined;
-
-          if (
-            destino &&
-            (destino.lote !==
-              item.lote ||
-              destino.unidade !==
-                item.unidade)
-          ) {
-            throw new Error(
-              `Lote conflitante na cozinha para ${item.nome}.`,
-            );
-          }
-
-          const acrescimo =
-            recebido.quantidadeRecebida;
-
-          if (
-            acrescimo > 0
-          ) {
-            const total =
-              Math.round(
-                ((destino?.quantidade ??
-                  0) +
-                  acrescimo) *
-                  1000,
-              ) /
-              1000;
-
-            tx.set(
-              referencias[
-                i
-              ].cozinha,
-              {
-                nome:
-                  original.nome,
-                categoria:
-                  original.categoria,
-                lote:
-                  original.lote,
-                validade:
-                  original.validade,
-                unidade:
-                  original.unidade,
-                custoUnitario:
-                  original.custoUnitario,
-                quantidade:
-                  total,
-                situacao:
-                  situacao(
-                    total,
-                    original.validade,
-                  ),
-              },
-            );
-          }
-        }
-
-        // Uma diferença entre enviado e recebido
-        // fica registrada para apuração.
-        // Ela não retorna automaticamente
-        // ao estoque principal.
-        tx.update(
-          transferenciaRef,
-          {
-            status:
-              checados.some(
-                ({
-                  divergencia,
-                }) =>
-                  divergencia,
-              )
-                ? "divergencia"
-                : "conferida",
-            recebimento:
-              dados.itens,
-            recebidoPorId:
-              pessoa.uid,
-            recebidoPor:
-              pessoa.nome,
-            recebidoEm:
-              new Date(),
-          },
-        );
-      },
-    );
-
     return NextResponse.json({
       ok: true,
+      ...resultado,
     });
   } catch (error) {
-    return responderErro(
+    return falha(
       error instanceof Error
         ? error.message
-        : "Não foi possível atualizar o estoque.",
+        : "Não foi possível registrar a entrada.",
       409,
     );
   }

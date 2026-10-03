@@ -21,42 +21,37 @@ function getAdminApp() {
   }
 
   /*
-   * DESENVOLVIMENTO LOCAL
+   * EXECUÇÃO LOCAL
    *
-   * Procura a credencial dentro de:
-   * .secrets/firebase-admin.json
+   * Usa a credencial local tanto no `npm run dev` quanto
+   * no `npm run start`, caso o arquivo exista.
    *
    * Esse arquivo NÃO deve ir para o Git.
    */
-  if (process.env.NODE_ENV !== "production") {
-    const caminhoCredencial = path.join(
-      process.cwd(),
-      ".secrets",
-      "firebase-admin.json",
+  const caminhoCredencial = path.join(
+    process.cwd(),
+    ".secrets",
+    "firebase-admin.json",
+  );
+
+  if (fs.existsSync(caminhoCredencial)) {
+    const conteudo = fs.readFileSync(
+      caminhoCredencial,
+      "utf8",
     );
 
-    if (fs.existsSync(caminhoCredencial)) {
-      const conteudo = fs.readFileSync(
-        caminhoCredencial,
-        "utf8",
-      );
+    const credencial = JSON.parse(conteudo);
 
-      const credencial = JSON.parse(conteudo);
-
-      return initializeApp({
-        credential: cert(credencial),
-      });
-    }
+    return initializeApp({
+      credential: cert(credencial),
+    });
   }
 
   /*
-   * PRODUÇÃO
+   * DEPLOY
    *
-   * No deploy não utilizaremos o arquivo
-   * .secrets/firebase-admin.json.
-   *
-   * A credencial deverá vir do ambiente
-   * seguro do servidor.
+   * Quando o arquivo local não existir, utiliza as
+   * credenciais configuradas no ambiente do servidor.
    */
   return initializeApp({
     credential: applicationDefault(),

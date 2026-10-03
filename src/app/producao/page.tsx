@@ -223,7 +223,7 @@ export default function ProducaoPage() {
 
   useEffect(() => {
 
-    if (!usuario) return;
+    if (!usuario?.id) return;
 
     let ativo = true;
 

@@ -56,13 +56,27 @@ export function HistoricoEstoque({ produtos, onCorrigido }: {
   useEffect(() => {
     if (!produtoId || !autorizado) return;
     let ativo = true;
-    setCarregando(true);
-    setErro("");
-    void requisitar(`/api/inventario/movimentacoes?produtoId=${encodeURIComponent(produtoId)}`)
-      .then((dados) => { if (ativo) setMovimentos(dados.movimentos); })
-      .catch((falha) => { if (ativo) setErro(falha.message); })
-      .finally(() => { if (ativo) setCarregando(false); });
-    return () => { ativo = false; };
+
+    const temporizador = window.setTimeout(() => {
+      setCarregando(true);
+      setErro("");
+
+      void requisitar(`/api/inventario/movimentacoes?produtoId=${encodeURIComponent(produtoId)}`)
+        .then((dados) => {
+          if (ativo) setMovimentos(dados.movimentos);
+        })
+        .catch((falha) => {
+          if (ativo) setErro(falha.message);
+        })
+        .finally(() => {
+          if (ativo) setCarregando(false);
+        });
+    }, 0);
+
+    return () => {
+      ativo = false;
+      window.clearTimeout(temporizador);
+    };
   }, [produtoId, autorizado]);
 
   async function corrigir(event: FormEvent<HTMLFormElement>) {

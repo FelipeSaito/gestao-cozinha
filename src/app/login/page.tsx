@@ -43,16 +43,34 @@ export default function LoginPage() {
   useEffect(() => {
     if (!cartao || cartao.perfil === "dono") return;
     let ativo = true;
-    setBuscando(true); setErro(null);
-    fetch("/api/auth/funcionarios", { cache: "no-store" })
-      .then(async (resposta) => {
-        if (!resposta.ok) throw new Error("Não foi possível carregar os funcionários.");
-        return resposta.json() as Promise<Funcionario[]>;
-      })
-      .then((dados) => { if (ativo) setLista(dados); })
-      .catch(() => { if (ativo) setErro("Não foi possível carregar os funcionários."); })
-      .finally(() => { if (ativo) setBuscando(false); });
-    return () => { ativo = false; };
+
+    const temporizador = window.setTimeout(() => {
+      setBuscando(true);
+      setErro(null);
+
+      fetch("/api/auth/funcionarios", { cache: "no-store" })
+        .then(async (resposta) => {
+          if (!resposta.ok) {
+            throw new Error("Não foi possível carregar os funcionários.");
+          }
+
+          return resposta.json() as Promise<Funcionario[]>;
+        })
+        .then((dados) => {
+          if (ativo) setLista(dados);
+        })
+        .catch(() => {
+          if (ativo) setErro("Não foi possível carregar os funcionários.");
+        })
+        .finally(() => {
+          if (ativo) setBuscando(false);
+        });
+    }, 0);
+
+    return () => {
+      ativo = false;
+      window.clearTimeout(temporizador);
+    };
   }, [cartao]);
 
   function voltar() {

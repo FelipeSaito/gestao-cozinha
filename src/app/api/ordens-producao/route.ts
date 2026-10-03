@@ -180,7 +180,7 @@ function insumosValidos(
   );
 }
 
-async function pessoaAutorizada(
+ async function pessoaAutorizada(
   request: NextRequest,
 ) {
   const token =
@@ -191,25 +191,40 @@ async function pessoaAutorizada(
     )?.[1];
 
   if (!token) {
+    console.error(
+      "A requisição chegou sem token de autenticação.",
+    );
+
     return null;
   }
 
   const { auth, db } = firebaseAdmin();
 
   try {
-    const uid = (
+    const tokenDecodificado =
       await auth.verifyIdToken(
         token,
         true,
-      )
-    ).uid;
+      );
 
-    const perfil = (
+    const uid = tokenDecodificado.uid;
+
+    const perfilDocumento =
       await db
         .collection("perfis")
         .doc(uid)
-        .get()
-    ).data();
+        .get();
+
+    if (!perfilDocumento.exists) {
+      console.error(
+        `Perfil não encontrado para o usuário ${uid}.`,
+      );
+
+      return null;
+    }
+
+    const perfil =
+      perfilDocumento.data();
 
     const perfis = Array.isArray(
       perfil?.perfis,
@@ -224,16 +239,28 @@ async function pessoaAutorizada(
       perfis.includes("producao");
 
     if (!autorizado) {
+      console.error(
+        `Usuário ${uid} não possui permissão para acessar as ordens de produção.`,
+      );
+
       return null;
     }
 
     return {
       uid,
-      nome: texto(perfil?.nome, 120)
+      nome: texto(
+        perfil?.nome,
+        120,
+      )
         ? perfil.nome.trim()
         : "Funcionário",
     };
-  } catch {
+  } catch (erro) {
+    console.error(
+      "Falha ao validar a sessão nas ordens de produção:",
+      erro,
+    );
+
     return null;
   }
 }

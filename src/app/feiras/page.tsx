@@ -776,7 +776,7 @@ export default function FeirasPage() {
       if (ativo) setErroDescartes(falha instanceof Error ? falha.message : "Não foi possível consultar descartes.");
     });
     return () => { ativo = false; };
-  }, [usuario?.id]);
+  }, [usuario?.id, usuario?.perfis]);
 
   const [feiraAberta, setFeiraAberta] =
     useState<string | null>(null);
@@ -784,6 +784,7 @@ export default function FeirasPage() {
 
 
   useEffect(() => {
+    const temporizador = window.setTimeout(() => {
     try {
       const salvo = localStorage.getItem(STORAGE_KEY);
 
@@ -858,10 +859,15 @@ export default function FeirasPage() {
         // O planejamento pode ser feito nesta sessão.
       }
     }
+    }, 0);
+
+    return () => {
+      window.clearTimeout(temporizador);
+    };
   }, []);
 
   useEffect(() => {
-    if (carregando || !usuario) return;
+    if (carregando || !usuario?.id) return;
     return escutarPlanejamentos(
       (remotos) => {
         setPlanejamentos(remotos);
@@ -876,7 +882,7 @@ export default function FeirasPage() {
   }, [carregando, usuario?.id]);
 
   useEffect(() => {
-    if (carregando || !usuario) return;
+    if (carregando || !usuario?.id) return;
     return escutarSaidas(
       (remotas) => {
         setSaidas(remotas);
@@ -891,7 +897,7 @@ export default function FeirasPage() {
   }, [carregando, usuario?.id]);
 
   useEffect(() => {
-    if (carregando || !usuario) return;
+    if (carregando || !usuario?.id) return;
     return escutarFechamentos(
       (remotos) => {
         setRetornos(remotos);
@@ -906,7 +912,7 @@ export default function FeirasPage() {
   }, [carregando, usuario?.id]);
 
   useEffect(() => {
-    if (carregando || !usuario) return;
+    if (carregando || !usuario?.id) return;
     return escutarReaproveitamentos(
       (remotos) => {
         setReaproveitamentos(remotos);
@@ -921,7 +927,7 @@ export default function FeirasPage() {
   }, [carregando, usuario?.id]);
 
   useEffect(() => {
-    if (carregando || !usuario) return;
+    if (carregando || !usuario?.id) return;
     return escutarProducaoFeiras(
       (remotos) => {
         setProducoes(remotos);

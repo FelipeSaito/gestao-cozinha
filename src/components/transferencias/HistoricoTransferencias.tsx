@@ -32,22 +32,34 @@ export function HistoricoTransferencias({ atualizacao }: { atualizacao: string |
   const [erro, setErro] = useState("");
 
   useEffect(() => {
-    if (!usuario) return;
+    if (!usuario?.id) return;
     let ativo = true;
-    setCarregando(true);
-    void (async () => {
-      const conta = firebaseClient().auth.currentUser;
-      if (!conta) throw new Error("Faça login para consultar o histórico.");
-      const resposta = await fetch("/api/inventario/transferencias/historico", {
-        cache: "no-store", headers: { Authorization: `Bearer ${await conta.getIdToken()}` },
-      });
-      const dados = await resposta.json();
-      if (!resposta.ok) throw new Error(dados.erro ?? "Não foi possível carregar o histórico.");
-      return dados.transferencias as TransferenciaEncerrada[];
-    })().then((dados) => { if (ativo) { setRegistros(dados); setErro(""); } })
-      .catch((falha) => { if (ativo) setErro(falha instanceof Error ? falha.message : "Erro ao consultar histórico."); })
-      .finally(() => { if (ativo) setCarregando(false); });
-    return () => { ativo = false; };
+
+    const temporizador = window.setTimeout(() => {
+      setCarregando(true);
+
+      void (async () => {
+        const conta = firebaseClient().auth.currentUser;
+        if (!conta) throw new Error("Faça login para consultar o histórico.");
+        const resposta = await fetch("/api/inventario/transferencias/historico", {
+          cache: "no-store", headers: { Authorization: `Bearer ${await conta.getIdToken()}` },
+        });
+        const tipo = resposta.headers.get("content-type") ?? "";
+        if (!tipo.includes("application/json")) {
+          throw new Error(`A rota /api/inventario/transferencias/historico respondeu HTTP ${resposta.status} em vez de JSON. Confira se o arquivo src/app/api/inventario/transferencias/historico/route.ts está no projeto e veja o terminal do Next.js.`);
+        }
+        const dados = await resposta.json();
+        if (!resposta.ok) throw new Error(dados.erro ?? "Não foi possível carregar o histórico.");
+        return dados.transferencias as TransferenciaEncerrada[];
+      })().then((dados) => { if (ativo) { setRegistros(dados); setErro(""); } })
+        .catch((falha) => { if (ativo) setErro(falha instanceof Error ? falha.message : "Erro ao consultar histórico."); })
+        .finally(() => { if (ativo) setCarregando(false); });
+    }, 0);
+
+    return () => {
+      ativo = false;
+      window.clearTimeout(temporizador);
+    };
   }, [usuario?.id, atualizacao]);
 
   return <section className={styles.card} aria-labelledby="titulo-historico-transferencias">

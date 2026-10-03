@@ -361,7 +361,7 @@ export default function RelatoriosPage() {
   );
 
   useEffect(() => {
-    if (!usuario || !dono) {
+    if (!usuario?.id || !dono) {
       return;
     }
 
@@ -470,7 +470,7 @@ export default function RelatoriosPage() {
   }, [usuario?.id, dono]);
 
   useEffect(() => {
-    if (!usuario || !dono) {
+    if (!usuario?.id || !dono) {
       return;
     }
 
@@ -495,7 +495,7 @@ export default function RelatoriosPage() {
 
   useEffect(() => {
     if (
-      !usuario ||
+      !usuario?.id ||
       !dono ||
       !inicio ||
       !fim ||
@@ -506,41 +506,49 @@ export default function RelatoriosPage() {
 
     let ativo = true;
 
-    setCarregandoCustos(true);
-    setErroCustos("");
+    const temporizador = window.setTimeout(
+      () => {
+        setCarregandoCustos(true);
+        setErroCustos("");
 
-    void consultarConsumosPorPeriodo(
-      inicio,
-      fim,
-    )
-      .then((dados) => {
-        if (ativo) {
-          setConsumos(dados);
-        }
-      })
-      .catch(
-        (falha: unknown) => {
-          if (ativo) {
-            setConsumos([]);
+        void consultarConsumosPorPeriodo(
+          inicio,
+          fim,
+        )
+          .then((dados) => {
+            if (ativo) {
+              setConsumos(dados);
+            }
+          })
+          .catch(
+            (falha: unknown) => {
+              if (ativo) {
+                setConsumos([]);
 
-            setErroCustos(
-              falha instanceof Error
-                ? falha.message
-                : "Erro nos custos.",
-            );
-          }
-        },
-      )
-      .finally(() => {
-        if (ativo) {
-          setCarregandoCustos(
-            false,
-          );
-        }
-      });
+                setErroCustos(
+                  falha instanceof Error
+                    ? falha.message
+                    : "Erro nos custos.",
+                );
+              }
+            },
+          )
+          .finally(() => {
+            if (ativo) {
+              setCarregandoCustos(
+                false,
+              );
+            }
+          });
+      },
+      0,
+    );
 
     return () => {
       ativo = false;
+      window.clearTimeout(
+        temporizador,
+      );
     };
   }, [
     usuario?.id,
@@ -550,7 +558,7 @@ export default function RelatoriosPage() {
   ]);
 
   useEffect(() => {
-    if (!usuario || !dono) {
+    if (!usuario?.id || !dono) {
       return;
     }
 
@@ -588,42 +596,50 @@ export default function RelatoriosPage() {
   }, [usuario?.id, dono]);
 
   useEffect(() => {
-    if (!usuario || !dono) {
+    if (!usuario?.id || !dono) {
       return;
     }
 
     let ativo = true;
 
-    setCarregandoOrdens(true);
+    const temporizador = window.setTimeout(
+      () => {
+        setCarregandoOrdens(true);
 
-    void listarOrdens()
-      .then((dados) => {
-        if (ativo) {
-          setOrdens(dados);
-          setErroOrdens("");
-        }
-      })
-      .catch(
-        (falha: unknown) => {
-          if (ativo) {
-            setErroOrdens(
-              falha instanceof Error
-                ? falha.message
-                : "Não foi possível carregar as ordens de massa.",
-            );
-          }
-        },
-      )
-      .finally(() => {
-        if (ativo) {
-          setCarregandoOrdens(
-            false,
-          );
-        }
-      });
+        void listarOrdens()
+          .then((dados) => {
+            if (ativo) {
+              setOrdens(dados);
+              setErroOrdens("");
+            }
+          })
+          .catch(
+            (falha: unknown) => {
+              if (ativo) {
+                setErroOrdens(
+                  falha instanceof Error
+                    ? falha.message
+                    : "Não foi possível carregar as ordens de massa.",
+                );
+              }
+            },
+          )
+          .finally(() => {
+            if (ativo) {
+              setCarregandoOrdens(
+                false,
+              );
+            }
+          });
+      },
+      0,
+    );
 
     return () => {
       ativo = false;
+      window.clearTimeout(
+        temporizador,
+      );
     };
   }, [usuario?.id, dono]);
 
@@ -866,6 +882,103 @@ export default function RelatoriosPage() {
     [ordens, inicio, fim],
   );
 
+  const custosPorOrdem = useMemo(() => {
+    const mapa = new Map<
+      string,
+      {
+        custoTotal: number;
+        quantidadeRegistros: number;
+        registrosSemCusto: number;
+      }
+    >();
+
+    for (const consumo of consumos) {
+      if (!consumo.ordemId) {
+        continue;
+      }
+
+      const atual = mapa.get(
+        consumo.ordemId,
+      ) ?? {
+        custoTotal: 0,
+        quantidadeRegistros: 0,
+        registrosSemCusto: 0,
+      };
+
+      atual.quantidadeRegistros += 1;
+
+      if (
+        typeof consumo.custoUnitario ===
+          "number" &&
+        Number.isFinite(
+          consumo.custoUnitario,
+        ) &&
+        consumo.custoUnitario >= 0
+      ) {
+        atual.custoTotal +=
+          consumo.quantidade *
+          consumo.custoUnitario;
+      } else {
+        atual.registrosSemCusto += 1;
+      }
+
+      mapa.set(consumo.ordemId, atual);
+    }
+
+    return mapa;
+  }, [consumos]);
+
+  function calcularCustosMassa(
+    ordem: OrdemRemota,
+  ) {
+    const custo =
+      custosPorOrdem.get(ordem.id);
+
+    const resultado =
+      ordem.resultadoMassa;
+
+    const custoTotal =
+      custo &&
+      custo.quantidadeRegistros > 0 &&
+      custo.registrosSemCusto === 0
+        ? custo.custoTotal
+        : null;
+
+    function custoUnitario(
+      quantidade:
+        | number
+        | undefined,
+    ) {
+      if (
+        custoTotal === null ||
+        !quantidade ||
+        quantidade <= 0
+      ) {
+        return null;
+      }
+
+      return (
+        Math.round(
+          (custoTotal / quantidade) *
+            10000,
+        ) / 10000
+      );
+    }
+
+    return {
+      custoTotal,
+      custoPorBloco: custoUnitario(
+        resultado?.quantidadeBlocos,
+      ),
+      custoPorSaco: custoUnitario(
+        resultado?.quantidadeSacos,
+      ),
+      custoPorRolo: custoUnitario(
+        resultado?.quantidadeRolos,
+      ),
+    };
+  }
+
   const kgPlanejados =
     ordensMassa.reduce(
       (soma, ordem) =>
@@ -1096,6 +1209,32 @@ export default function RelatoriosPage() {
       return;
     }
 
+    const valores =
+      ordensMassa.map((ordem) => {
+        const custos =
+          calcularCustosMassa(ordem);
+
+        return [
+          ordem.dataProducao,
+          ordem.codigo,
+          ordem.responsavel,
+          ordem.quantidade,
+          ordem.status,
+          ordem.resultadoMassa
+            ?.quantidadeBlocos ?? "",
+          ordem.resultadoMassa
+            ?.pesoEstimadoKg ?? "",
+          ordem.resultadoMassa
+            ?.quantidadeSacos ?? "",
+          ordem.resultadoMassa
+            ?.quantidadeRolos ?? "",
+          custos.custoTotal ?? "",
+          custos.custoPorBloco ?? "",
+          custos.custoPorSaco ?? "",
+          custos.custoPorRolo ?? "",
+        ];
+      });
+
     baixarCsv(
       `massa-${inicio}-a-${fim}.csv`,
       [
@@ -1108,22 +1247,12 @@ export default function RelatoriosPage() {
         "Peso estimado kg",
         "Sacos armazenados",
         "Rolos armazenados",
+        "Custo total",
+        "Custo por bloco",
+        "Custo por saco",
+        "Custo por rolo",
       ],
-      ordensMassa.map((ordem) => [
-        ordem.dataProducao,
-        ordem.codigo,
-        ordem.responsavel,
-        ordem.quantidade,
-        ordem.status,
-        ordem.resultadoMassa
-          ?.quantidadeBlocos ?? "",
-        ordem.resultadoMassa
-          ?.pesoEstimadoKg ?? "",
-        ordem.resultadoMassa
-          ?.quantidadeSacos ?? "",
-        ordem.resultadoMassa
-          ?.quantidadeRolos ?? "",
-      ]),
+      valores,
     );
   }
 
@@ -2114,6 +2243,22 @@ export default function RelatoriosPage() {
                                 <th scope="col">
                                   Rolos
                                 </th>
+
+                                <th scope="col">
+                                  Custo total
+                                </th>
+
+                                <th scope="col">
+                                  Por bloco
+                                </th>
+
+                                <th scope="col">
+                                  Por saco
+                                </th>
+
+                                <th scope="col">
+                                  Por rolo
+                                </th>
                               </tr>
                             </thead>
 
@@ -2122,6 +2267,11 @@ export default function RelatoriosPage() {
                                 (ordem) => {
                                   const resultado =
                                     ordem.resultadoMassa;
+
+                                  const custos =
+                                    calcularCustosMassa(
+                                      ordem,
+                                    );
 
                                   return (
                                     <tr
@@ -2204,6 +2354,42 @@ export default function RelatoriosPage() {
                                             )
                                           : "—"}
                                       </td>
+
+                                      <td>
+                                        {custos.custoTotal !==
+                                        null
+                                          ? formatCurrency(
+                                              custos.custoTotal,
+                                            )
+                                          : "—"}
+                                      </td>
+
+                                      <td>
+                                        {custos.custoPorBloco !==
+                                        null
+                                          ? formatCurrency(
+                                              custos.custoPorBloco,
+                                            )
+                                          : "—"}
+                                      </td>
+
+                                      <td>
+                                        {custos.custoPorSaco !==
+                                        null
+                                          ? formatCurrency(
+                                              custos.custoPorSaco,
+                                            )
+                                          : "—"}
+                                      </td>
+
+                                      <td>
+                                        {custos.custoPorRolo !==
+                                        null
+                                          ? formatCurrency(
+                                              custos.custoPorRolo,
+                                            )
+                                          : "—"}
+                                      </td>
                                     </tr>
                                   );
                                 },
@@ -2225,7 +2411,13 @@ export default function RelatoriosPage() {
                         são calculados
                         separadamente,
                         considerando três
-                        rolos por saco.
+                        rolos por saco. Os
+                        custos consideram
+                        somente os insumos
+                        registrados na
+                        ordem; “—” indica
+                        ausência de consumo
+                        ou custo incompleto.
                       </p>
                     </>
                   )}
