@@ -32,6 +32,7 @@
 .stockSelector { display: grid; gap: 8px; width: min(100%, 330px); font-weight: 600; }
 .stockSelector select { min-height: 46px; width: 100%; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-medium); background: var(--color-surface); color: var(--color-text-primary); font: inherit; }
 .error { padding: 12px 14px; border-radius: var(--radius-medium); background: #fff1f0; color: #b42318 !important; }
+.negative { color: #b42318; }
 @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .panel { padding: 16px; } .filters { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 700px) { .massSummary { grid-template-columns: minmax(0, 1fr); } }

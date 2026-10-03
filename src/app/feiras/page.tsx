@@ -54,6 +54,7 @@ import {
 } from "@/services/useFeirasCadastradas";
 import type { FeiraCadastrada } from "@/services/feirasCadastradas";
 import { chaveSabor, nomeSabor } from "@/lib/nomesSabores";
+import { consultarDescartesFeira, registrarDescarteFeira, type DescartesFeira } from "@/services/descartesFeira";
 
 import styles from "./page.module.css";
 
@@ -621,7 +622,7 @@ function FechamentoFeira({
         {retorno.itens.map((item) => (
           <span key={item.saborId}>{nomeSabor(item.nome)}: {item.sobraram} sobraram e foram guardados</span>
         ))}
-        {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas a outra feira. Peça ao Dono para revisar os registros antes de corrigir.</p>}
+        {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas ou descartadas. Peça ao Dono para revisar os registros antes de corrigir.</p>}
         <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
           setSobras(Object.fromEntries(retorno.itens.map((item) => [item.saborId, String(item.sobraram)])));
           setEditando(true);
@@ -657,6 +658,69 @@ function FechamentoFeira({
   );
 }
 
+function DescarteFeira({ chave, retorno, usos, descartes, onSaved }: {
+  chave: string;
+  retorno: RegistroRetorno;
+  usos: Reaproveitamentos;
+  descartes: DescartesFeira;
+  onSaved: () => Promise<void>;
+}) {
+  const [saborId, setSaborId] = useState(retorno.itens[0]?.saborId ?? "");
+  const [quantidade, setQuantidade] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [erro, setErro] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [operacaoId, setOperacaoId] = useState<string | null>(null);
+  const item = retorno.itens.find((registro) => registro.saborId === saborId);
+  const origem = `${chave}|${saborId}`;
+  const alocados = Object.values(usos).reduce((total, destino) => total + (destino[origem] ?? 0), 0);
+  const disponiveis = Math.max(0, (item?.sobraram ?? 0) - alocados - (descartes[origem] ?? 0));
+
+  async function confirmar() {
+    const numero = Number(quantidade);
+    if (!Number.isSafeInteger(numero) || numero < 1 || numero > disponiveis || motivo.trim().length < 5) {
+      setErro("Informe uma quantidade disponível e o motivo do descarte (mínimo de 5 caracteres).");
+      return;
+    }
+    setSalvando(true);
+    setErro("");
+    const id = operacaoId ?? crypto.randomUUID();
+    setOperacaoId(id);
+    try {
+      await registrarDescarteFeira(origem, numero, motivo.trim(), id);
+      await onSaved();
+      setOperacaoId(null);
+      setQuantidade("");
+      setMotivo("");
+    } catch (falha) {
+      setErro(falha instanceof Error ? falha.message : "Não foi possível registrar o descarte.");
+    } finally { setSalvando(false); }
+  }
+
+  return <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, border: "1px solid var(--color-border)", borderRadius: 12 }}>
+    <strong>Registrar perda por descarte</strong>
+    <label>Pastel
+      <select value={saborId} onChange={(evento) => { setSaborId(evento.target.value); setOperacaoId(null); }}>
+        {retorno.itens.filter((registro) => registro.sobraram > 0).map((registro) =>
+          <option key={registro.saborId} value={registro.saborId}>{nomeSabor(registro.nome)}</option>)}
+      </select>
+    </label>
+    <span>Disponíveis para descarte: {disponiveis}</span>
+    <label>Quantidade
+      <input type="number" min={1} max={disponiveis} step={1} value={quantidade}
+        onChange={(evento) => { setQuantidade(evento.target.value); setOperacaoId(null); }} />
+    </label>
+    <label>Motivo
+      <input maxLength={200} value={motivo} placeholder="Ex.: produto danificado"
+        onChange={(evento) => { setMotivo(evento.target.value); setOperacaoId(null); }} />
+    </label>
+    {erro && <p role="alert">{erro}</p>}
+    <Button type="button" variant="secondary" disabled={salvando || disponiveis === 0} onClick={confirmar}>
+      {salvando ? "Registrando..." : "Registrar descarte"}
+    </Button>
+  </div>;
+}
+
 export default function FeirasPage() {
   const { usuario, carregando } = useAuth();
   const router = useRouter();
@@ -685,6 +749,8 @@ export default function FeirasPage() {
   const [importandoSaidas, setImportandoSaidas] = useState(false);
   const [saidaAberta, setSaidaAberta] = useState<string | null>(null);
   const [retornos, setRetornos] = useState<Retornos>({});
+  const [descartes, setDescartes] = useState<DescartesFeira>({});
+  const [erroDescartes, setErroDescartes] = useState("");
   const [retornosLocais, setRetornosLocais] = useState<Retornos>({});
   const [fechamentosSincronizados, setFechamentosSincronizados] = useState(false);
   const [erroFechamentos, setErroFechamentos] = useState("");
@@ -700,6 +766,17 @@ export default function FeirasPage() {
   const [erroProducao, setErroProducao] = useState("");
   const [producaoAberta, setProducaoAberta] = useState<string | null>(null);
   const [retornoAberto, setRetornoAberto] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!usuario?.perfis.includes("dono")) return;
+    let ativo = true;
+    void consultarDescartesFeira().then((dados) => {
+      if (ativo) { setDescartes(dados); setErroDescartes(""); }
+    }).catch((falha: unknown) => {
+      if (ativo) setErroDescartes(falha instanceof Error ? falha.message : "Não foi possível consultar descartes.");
+    });
+    return () => { ativo = false; };
+  }, [usuario?.id]);
 
   const [feiraAberta, setFeiraAberta] =
     useState<string | null>(null);
@@ -1551,6 +1628,11 @@ export default function FeirasPage() {
                           onConfirmar={(itens) => confirmarRetorno(chave, itens, registroRetorno?.registradoEm)}
                         />
                       </div>
+                    )}
+                    {podePlanejar && registroRetorno && registroRetorno.itens.some((item) => item.sobraram > 0) && (
+                      erroDescartes ? <p role="alert">{erroDescartes}</p> :
+                      <DescarteFeira chave={chave} retorno={registroRetorno} usos={reaproveitamentos}
+                        descartes={descartes} onSaved={async () => setDescartes(await consultarDescartesFeira())} />
                     )}
                   </article>
                 );

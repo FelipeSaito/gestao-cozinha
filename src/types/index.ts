@@ -87,11 +87,14 @@ export interface User {
   iniciais: string;
 
   /**
-   * Temporariamente opcional para
-   * manter compatibilidade com usuários
-   * antigos dos arquivos de serviço.
+   * Perfil principal do usuário.
    */
   perfil?: UserRole;
+
+  /**
+   * Permite que um usuário tenha mais de um perfil.
+   */
+  perfis?: UserRole[];
 }
 
 /*
@@ -108,6 +111,57 @@ export interface ProductionIngredient {
   nome: string;
   quantidade: number;
   unidade: string;
+}
+
+/**
+ * Resultado registrado quando uma produção
+ * de massa é concluída.
+ *
+ * O funcionário informa somente a quantidade
+ * de blocos produzidos.
+ *
+ * O peso é apenas uma estimativa calculada
+ * usando 1,53 kg como referência por bloco.
+ *
+ * A quantidade de rolos é calculada separadamente
+ * pela quantidade de sacos armazenados:
+ * 1 saco = 3 rolos.
+ */
+export interface ResultadoProducaoMassa {
+  /**
+   * Quantidade planejada na ordem.
+   * Exemplo: 150 kg.
+   */
+  pesoBaseKg: number;
+
+  /**
+   * Quantidade de blocos que a produção rendeu.
+   */
+  quantidadeBlocos: number;
+
+  /**
+   * Peso utilizado somente como referência
+   * para estimar o rendimento.
+   * Atualmente: 1,53 kg por bloco.
+   */
+  pesoReferenciaBlocoKg: number;
+
+  /**
+   * Peso estimado calculado automaticamente:
+   * quantidadeBlocos × pesoReferenciaBlocoKg.
+   */
+  pesoEstimadoKg: number;
+
+  /**
+   * Quantidade total de sacos armazenados.
+   */
+  quantidadeSacos: number;
+
+  /**
+   * Quantidade total de rolos armazenados.
+   * Calculada usando 3 rolos por saco.
+   */
+  quantidadeRolos: number;
 }
 
 export interface Production {
@@ -127,6 +181,12 @@ export interface Production {
 
   status: ProductionStatus;
   insumos: ProductionIngredient[];
+
+  /**
+   * Preenchido quando a produção de massa
+   * é concluída.
+   */
+  resultadoMassa?: ResultadoProducaoMassa;
 }
 
 /*
@@ -199,9 +259,7 @@ export interface PlanoProducaoMassa {
   quantidadeDesejadaKg: number;
   quantidadeBateladas: number;
 
-  receitaPorBatelada:
-    ReceitaMassaPorBatelada;
-
+  receitaPorBatelada: ReceitaMassaPorBatelada;
   totais: TotaisProducaoMassa;
 
   etapa: EtapaProducaoMassa;
@@ -227,8 +285,7 @@ export interface FreezerMassa {
   ativo: boolean;
 
   /**
-   * Será preenchido futuramente quando
-   * o peso dos rolos for conhecido.
+   * Capacidade máxima, quando conhecida.
    */
   capacidadeKg?: number;
 

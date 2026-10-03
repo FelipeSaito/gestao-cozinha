@@ -21,6 +21,7 @@ export interface ConsumoRegistrado {
   unidade: string;
   quantidade: number;
   finalidade: string;
+  custoUnitario: number | null;
   saldoAnterior: number;
   saldoNovo: number;
   registradoPor: string;
@@ -45,6 +46,30 @@ export async function consultarConsumosCozinha(): Promise<ConsumoRegistrado[]> {
   if (!resultado || typeof resultado !== "object" ||
     !("consumos" in resultado) || !Array.isArray(resultado.consumos)) {
     throw new Error("Resposta inválida ao consultar os consumos.");
+  }
+  return resultado.consumos as ConsumoRegistrado[];
+}
+
+export async function consultarConsumosPorPeriodo(
+  inicio: string, fim: string,
+): Promise<ConsumoRegistrado[]> {
+  const usuario = firebaseClient().auth.currentUser;
+  if (!usuario) throw new Error("Faça login para consultar os custos.");
+  const parametros = new URLSearchParams({ inicio, fim });
+  const resposta = await fetch(`/api/inventario/consumos?${parametros}`, {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${await usuario.getIdToken()}` },
+  });
+  const resultado: unknown = await resposta.json();
+  if (!resposta.ok) {
+    const mensagem = resultado && typeof resultado === "object" &&
+      "erro" in resultado && typeof resultado.erro === "string"
+      ? resultado.erro : "Não foi possível consultar os custos.";
+    throw new Error(mensagem);
+  }
+  if (!resultado || typeof resultado !== "object" ||
+    !("consumos" in resultado) || !Array.isArray(resultado.consumos)) {
+    throw new Error("Resposta inválida ao consultar os custos.");
   }
   return resultado.consumos as ConsumoRegistrado[];
 }

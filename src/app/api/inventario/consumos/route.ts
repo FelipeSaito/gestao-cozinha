@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { firebaseAdmin } from "@/lib/firebase-admin";
 import type { Product } from "@/types";
 
@@ -55,16 +56,50 @@ export async function GET(request: NextRequest) {
     }
 
     const ordemId = request.nextUrl.searchParams.get("ordemId");
+    const inicio = request.nextUrl.searchParams.get("inicio");
+    const fim = request.nextUrl.searchParams.get("fim");
     if (ordemId && !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(ordemId)) {
       return erro("Ordem inválida.", 400);
     }
-    const consulta = ordemId
-      ? await db.collection("consumosEstoqueCozinha")
-        .where("ordemId", "==", ordemId).get()
-      : await db.collection("consumosEstoqueCozinha")
-        .orderBy("registradoEm", "desc").limit(30).get();
+    if (inicio !== null || fim !== null) {
+      if (ordemId || !((perfil?.perfil === "dono") || perfis.includes("dono"))) {
+        return erro("Somente o Dono pode consultar custos por período.", 403);
+      }
+      if (!inicio || !fim || !/^\d{4}-\d{2}-\d{2}$/.test(inicio) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(fim) || inicio > fim) {
+        return erro("Período inválido.", 400);
+      }
+    }
+    const documentos: QueryDocumentSnapshot[] = [];
+    if (inicio && fim) {
+      const inicioData = new Date(`${inicio}T00:00:00-03:00`);
+      const fimData = new Date(`${fim}T00:00:00-03:00`);
+      fimData.setDate(fimData.getDate() + 1);
+      if (Number.isNaN(inicioData.valueOf()) || Number.isNaN(fimData.valueOf())) {
+        return erro("Período inválido.", 400);
+      }
+      let ultimo: QueryDocumentSnapshot | undefined;
+      do {
+        let consulta = db.collection("consumosEstoqueCozinha")
+          .where("registradoEm", ">=", inicioData)
+          .where("registradoEm", "<", fimData)
+          .orderBy("registradoEm", "desc").limit(500);
+        if (ultimo) consulta = consulta.startAfter(ultimo);
+        const pagina = await consulta.get();
+        documentos.push(...pagina.docs);
+        ultimo = pagina.docs.at(-1);
+        if (documentos.length > 10000) return erro("Período muito amplo. Reduza as datas.", 413);
+        if (pagina.size < 500) break;
+      } while (ultimo);
+    } else {
+      const consulta = ordemId
+        ? await db.collection("consumosEstoqueCozinha").where("ordemId", "==", ordemId).get()
+        : await db.collection("consumosEstoqueCozinha")
+          .orderBy("registradoEm", "desc").limit(30).get();
+      documentos.push(...consulta.docs);
+    }
 
-    const consumos = consulta.docs.map((documento) => {
+    const consumos = documentos.map((documento) => {
       const dados = documento.data();
       return {
         id: documento.id,
@@ -76,6 +111,7 @@ export async function GET(request: NextRequest) {
         lote: dados.lote,
         unidade: dados.unidade,
         quantidade: dados.quantidade,
+        custoUnitario: typeof dados.custoUnitario === "number" ? dados.custoUnitario : null,
         finalidade: dados.finalidade,
         saldoAnterior: dados.saldoAnterior,
         saldoNovo: dados.saldoNovo,
@@ -85,7 +121,7 @@ export async function GET(request: NextRequest) {
     });
 
     consumos.sort((a, b) => (b.registradoEm ?? "").localeCompare(a.registradoEm ?? ""));
-    return NextResponse.json({ consumos: consumos.slice(0, 30) });
+    return NextResponse.json({ consumos: inicio && fim ? consumos : ordemId ? consumos : consumos.slice(0, 30) });
   } catch {
     return erro("Não foi possível consultar os consumos.", 500);
   }
@@ -167,6 +203,9 @@ export async function POST(request: NextRequest) {
       if (typeof produto.validade !== "string" || produto.validade < hojeBrasil()) {
         throw new Error("Ingrediente vencido não pode ser usado na produção.");
       }
+      if (!Number.isFinite(produto.custoUnitario) || produto.custoUnitario < 0) {
+        throw new Error("Cadastre um custo unitário válido antes de registrar o consumo.");
+      }
 
       const saldoAnterior = produto.quantidade;
       const saldoNovo = Math.round((saldoAnterior - quantidade) * 1000) / 1000;
@@ -175,6 +214,7 @@ export async function POST(request: NextRequest) {
         produtoId, nome: produto.nome, lote: produto.lote,
         ordemId, ordemCodigo: ordem?.codigo, ordemPrato: ordem?.prato,
         unidade: produto.unidade, quantidade, finalidade,
+        custoUnitario: produto.custoUnitario,
         saldoAnterior, saldoNovo, registradoPorId: uid,
         registradoPor: typeof perfil?.nome === "string" ? perfil.nome : "Funcionário",
         registradoEm: new Date(),
