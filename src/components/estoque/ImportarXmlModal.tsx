@@ -22,6 +22,12 @@ import {
   type NovaEntrada,
 } from "@/services/entradasFirestore";
 
+import {
+  gerarOperacaoIdNfe,
+  lerProdutosNfeXml,
+  type ProdutoNfeXml,
+} from "@/lib/nfe-xml";
+
 import styles from "./ImportarXmlModal.module.css";
 
 interface Props {
@@ -33,265 +39,11 @@ interface Props {
   ) => Promise<void>;
 }
 
-interface ProdutoXml {
-  chave: string;
-  nfeChave: string;
-  codigo: string;
-  nome: string;
-  categoria: string;
-  lote: string;
-  validade: string;
-  quantidade: string;
-  unidade: string;
-  custoUnitario: string;
-}
-
-function textoXml(
-  elemento: Element,
-  tag: string,
-): string {
-  return (
-    elemento
-      .getElementsByTagName(tag)
-      .item(0)
-      ?.textContent?.trim() ?? ""
-  );
-}
-
-function numeroXml(
-  valor: string,
-): string {
-  const numero = Number(
-    valor.replace(",", "."),
-  );
-
-  if (!Number.isFinite(numero)) {
-    return "";
-  }
-
-  return String(numero);
-}
-
-function normalizarUnidade(
-  unidade: string,
-): string {
-  const valor = unidade
-    .trim()
-    .toUpperCase();
-
-  if (
-    valor === "KG" ||
-    valor === "KILO" ||
-    valor === "QUILOGRAMA"
-  ) {
-    return "kg";
-  }
-
-  if (
-    valor === "L" ||
-    valor === "LT" ||
-    valor === "LITRO" ||
-    valor === "LITROS"
-  ) {
-    return "litros";
-  }
-
-  return "unidades";
-}
-
-function lerProdutosXml(
-  conteudo: string,
-): ProdutoXml[] {
-  const documento =
-    new DOMParser().parseFromString(
-      conteudo,
-      "application/xml",
-    );
-
-  if (
-    documento.getElementsByTagName(
-      "parsererror",
-    ).length > 0
-  ) {
-    throw new Error(
-      "O arquivo selecionado não contém um XML válido.",
-    );
-  }
-
-  const infNFe =
-    documento
-      .getElementsByTagName("infNFe")
-      .item(0);
-
-  if (!infNFe) {
-    throw new Error(
-      "O arquivo não parece ser uma NF-e válida.",
-    );
-  }
-
-  const identificadorNfe =
-    infNFe.getAttribute("Id") ?? "";
-
-  const nfeChave =
-    identificadorNfe.replace(
-      /^NFe/i,
-      "",
-    );
-
-  if (!/^\d{44}$/.test(nfeChave)) {
-    throw new Error(
-      "A NF-e não possui uma chave de acesso válida.",
-    );
-  }
-
-  const detalhes = Array.from(
-    documento.getElementsByTagName(
-      "det",
-    ),
-  );
-
-  if (detalhes.length === 0) {
-    throw new Error(
-      "Nenhum produto foi encontrado nesta NF-e.",
-    );
-  }
-
-  return detalhes.map(
-    (
-      detalhe,
-      indice,
-    ): ProdutoXml => {
-      const produto =
-        detalhe
-          .getElementsByTagName(
-            "prod",
-          )
-          .item(0);
-
-      if (!produto) {
-        throw new Error(
-          `O produto ${indice + 1} da NF-e está inválido.`,
-        );
-      }
-
-      const rastro =
-        produto
-          .getElementsByTagName(
-            "rastro",
-          )
-          .item(0);
-
-      const codigo =
-        textoXml(
-          produto,
-          "cProd",
-        ) || String(indice + 1);
-
-      const nome = textoXml(
-        produto,
-        "xProd",
-      );
-
-      const quantidade = numeroXml(
-        textoXml(
-          produto,
-          "qCom",
-        ),
-      );
-
-      const custoUnitario =
-        numeroXml(
-          textoXml(
-            produto,
-            "vUnCom",
-          ),
-        );
-
-      if (
-        !nome ||
-        !quantidade ||
-        !custoUnitario
-      ) {
-        throw new Error(
-          `O produto ${indice + 1} não possui nome, quantidade ou custo válidos.`,
-        );
-      }
-
-      return {
-        chave: `${codigo}-${indice}`,
-        nfeChave,
-        codigo,
-        nome,
-        categoria: "",
-        lote: rastro
-          ? textoXml(
-              rastro,
-              "nLote",
-            )
-          : "",
-        validade: rastro
-          ? textoXml(
-              rastro,
-              "dVal",
-            )
-          : "",
-        quantidade,
-        unidade:
-          normalizarUnidade(
-            textoXml(
-              produto,
-              "uCom",
-            ),
-          ),
-        custoUnitario,
-      };
-    },
-  );
-}
-
-async function gerarOperacaoIdNfe(
-  nfeChave: string,
-  itemChave: string,
-): Promise<string> {
-  const conteudo =
-    new TextEncoder().encode(
-      `${nfeChave}|${itemChave}`,
-    );
-
-  const hash =
-    await crypto.subtle.digest(
-      "SHA-256",
-      conteudo,
-    );
-
-  const bytes =
-    new Uint8Array(
-      hash,
-    ).slice(0, 16);
-
-  bytes[6] =
-    (bytes[6] & 0x0f) | 0x50;
-
-  bytes[8] =
-    (bytes[8] & 0x3f) | 0x80;
-
-  const hexadecimal =
-    Array.from(
-      bytes,
-      (byte) =>
-        byte
-          .toString(16)
-          .padStart(2, "0"),
-    ).join("");
-
-  return [
-    hexadecimal.slice(0, 8),
-    hexadecimal.slice(8, 12),
-    hexadecimal.slice(12, 16),
-    hexadecimal.slice(16, 20),
-    hexadecimal.slice(20, 32),
-  ].join("-");
-}
+type CampoEditavel =
+  keyof Omit<
+    ProdutoNfeXml,
+    "chave" | "codigo" | "nfeChave"
+  >;
 
 export function ImportarXmlModal({
   open,
@@ -308,7 +60,9 @@ export function ImportarXmlModal({
   const [
     produtos,
     setProdutos,
-  ] = useState<ProdutoXml[]>([]);
+  ] = useState<
+    ProdutoNfeXml[]
+  >([]);
 
   const [
     erro,
@@ -373,7 +127,10 @@ export function ImportarXmlModal({
       return;
     }
 
-    if (arquivo.size > 5_000_000) {
+    if (
+      arquivo.size >
+      5_000_000
+    ) {
       setProdutos([]);
       setArquivoNome("");
 
@@ -389,7 +146,7 @@ export function ImportarXmlModal({
         await arquivo.text();
 
       const encontrados =
-        lerProdutosXml(
+        lerProdutosNfeXml(
           conteudo,
         );
 
@@ -416,12 +173,7 @@ export function ImportarXmlModal({
 
   function alterarProduto(
     chave: string,
-    campo: keyof Omit<
-      ProdutoXml,
-      | "chave"
-      | "codigo"
-      | "nfeChave"
-    >,
+    campo: CampoEditavel,
     valor: string,
   ) {
     if (trava.current) {
@@ -435,7 +187,8 @@ export function ImportarXmlModal({
           chave
             ? {
                 ...produto,
-                [campo]: valor,
+                [campo]:
+                  valor,
               }
             : produto,
       ),
@@ -467,7 +220,7 @@ export function ImportarXmlModal({
   }
 
   function validarProduto(
-    produto: ProdutoXml,
+    produto: ProdutoNfeXml,
   ): NovaEntrada | null {
     const quantidade = Number(
       produto.quantidade.replace(
@@ -503,10 +256,12 @@ export function ImportarXmlModal({
     }
 
     return {
-      nome: produto.nome.trim(),
+      nome:
+        produto.nome.trim(),
       categoria:
         produto.categoria.trim(),
-      lote: produto.lote.trim(),
+      lote:
+        produto.lote.trim(),
       validade:
         produto.validade,
       quantidade,
@@ -777,6 +532,7 @@ export function ImportarXmlModal({
                         size={18}
                         aria-hidden="true"
                       />
+
                       Remover
                     </button>
                   </div>
