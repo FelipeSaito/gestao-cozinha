@@ -4,6 +4,10 @@ import {
 } from "next/server";
 
 import { firebaseAdmin } from "@/lib/firebase-admin";
+import {
+  calcularResultadoMassa,
+  quantidadeBlocosValida,
+} from "@/lib/rendimento-massa";
 
 import type {
   Production,
@@ -51,20 +55,6 @@ const LOCAIS_MASSA = [
 
 type LocalMassa =
   (typeof LOCAIS_MASSA)[number];
-
-/**
- * Cada bloco pesa aproximadamente 1,53 kg.
- *
- * Esse valor é usado somente para estimar
- * o rendimento da produção. O funcionário
- * não precisa pesar a massa diariamente.
- */
-const PESO_REFERENCIA_BLOCO_KG = 1.53;
-
-/**
- * Cada saco armazenado contém três rolos.
- */
-const ROLOS_POR_SACO = 3;
 
 function falha(
   mensagem: string,
@@ -122,17 +112,6 @@ function quantidadeValida(
       valor * 1000 -
         Math.round(valor * 1000),
     ) < 1e-7
-  );
-}
-
-function quantidadeBlocosValida(
-  valor: unknown,
-): valor is number {
-  return (
-    typeof valor === "number" &&
-    Number.isSafeInteger(valor) &&
-    valor > 0 &&
-    valor <= 100_000
   );
 }
 
@@ -740,13 +719,6 @@ export async function POST(
               );
             }
 
-            const quantidadeBlocos =
-              dados.quantidadeBlocos;
-
-            const quantidadeRolos =
-              totalSacos *
-              ROLOS_POR_SACO;
-
             const pesoBaseKg =
               typeof registroData?.quantidade ===
                 "number" &&
@@ -756,25 +728,14 @@ export async function POST(
                 ? registroData.quantidade
                 : 0;
 
-            const pesoEstimadoKg =
-              Math.round(
-                quantidadeBlocos *
-                  PESO_REFERENCIA_BLOCO_KG *
-                  1000,
-              ) / 1000;
-
-            resultadoMassa = {
-              pesoBaseKg,
-              quantidadeBlocos,
-
-              pesoReferenciaBlocoKg:
-                PESO_REFERENCIA_BLOCO_KG,
-
-              pesoEstimadoKg,
-              quantidadeSacos:
-                totalSacos,
-              quantidadeRolos,
-            };
+            resultadoMassa =
+              calcularResultadoMassa({
+                pesoBaseKg,
+                quantidadeBlocos:
+                  dados.quantidadeBlocos,
+                quantidadeSacos:
+                  totalSacos,
+              });
 
             etapaMassa =
               "concluida";

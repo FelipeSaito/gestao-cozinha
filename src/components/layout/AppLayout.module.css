@@ -3,8 +3,18 @@
   grid-template-columns:
     var(--sidebar-width)
     minmax(0, 1fr);
+
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+
   min-height: 100vh;
+  min-height: 100dvh;
+
   background: var(--color-background);
+
+  /* Impede que elementos internos ampliem a página. */
+  overflow-x: clip;
 }
 
 .navigation {
@@ -13,14 +23,26 @@
 
 .main {
   display: flex;
-  min-width: 0;
   flex-direction: column;
+
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .content {
   flex: 1;
+
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+
   padding: 24px;
+}
+
+.content > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .backdrop {
@@ -38,12 +60,19 @@
   top: 8px;
   left: 50%;
   z-index: 100;
+
+  max-width: calc(100% - 32px);
   padding: 12px 18px;
+
   border-radius: var(--radius-medium);
+
   background: var(--color-primary);
   color: var(--color-text-inverse);
+
   font-size: 14px;
   font-weight: 700;
+  text-align: center;
+
   transform: translate(-50%, -150%);
   transition: transform 150ms ease;
 }
@@ -56,14 +85,21 @@
 
 .authLoading {
   display: flex;
-  min-height: 100dvh;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  flex-direction: column;
+
+  width: 100%;
+  min-width: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+
   gap: 14px;
   padding: 24px;
+
   background: var(--color-background);
   color: var(--color-text-secondary);
+
   font-size: 16px;
   font-weight: 600;
   text-align: center;
@@ -72,9 +108,11 @@
 .loadingSpinner {
   width: 38px;
   height: 38px;
+
   border: 4px solid var(--color-primary-light);
   border-top-color: var(--color-primary);
   border-radius: var(--radius-full);
+
   animation: loading-spin 700ms linear infinite;
 }
 
@@ -84,40 +122,72 @@
   }
 }
 
+/* Tablet e celular */
+
 @media (max-width: 900px) {
   .shell {
-    grid-template-columns:
-      minmax(0, 1fr);
+    display: block;
   }
 
+  /*
+   * O menu fica sobre a página quando aberto.
+   * Seu contêiner não reserva espaço no layout.
+   */
   .navigation {
-    position: relative;
+    position: fixed;
+    top: 0;
+    left: 0;
     z-index: 60;
+
+    width: 0;
+    height: 0;
+  }
+
+  .main {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
   }
 
   .backdrop {
     position: fixed;
     inset: 0;
     z-index: 50;
+
     display: block;
+
     border: none;
     background: rgba(15, 23, 42, 0.55);
+
     cursor: pointer;
   }
 
   .content {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+
     padding: 16px;
   }
 
   .mobileActions {
     display: flex;
     flex-wrap: wrap;
+
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+
     gap: 10px;
     padding: 12px 16px 0;
   }
 
   .mobileActions > * {
     flex: 1 1 180px;
+    min-width: 0;
+    max-width: 100%;
   }
 }
 

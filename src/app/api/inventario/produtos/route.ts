@@ -4,6 +4,13 @@ import {
 } from "next/server";
 
 import { firebaseAdmin } from "@/lib/firebase-admin";
+import {
+  calcularEntradaEstoque,
+  dataValida,
+  numero,
+  situacao,
+  texto,
+} from "@/lib/estoque-calculos";
 import type { Product } from "@/types";
 
 export const runtime = "nodejs";
@@ -29,135 +36,13 @@ function falha(
   );
 }
 
-function texto(
-  valor: unknown,
-  maximo: number,
-): valor is string {
-  return (
-    typeof valor === "string" &&
-    valor.trim().length > 0 &&
-    valor.trim().length <= maximo
-  );
-}
-
-function numero(
-  valor: unknown,
-  casas: number,
-  permiteZero: boolean,
-): valor is number {
-  if (
-    typeof valor !== "number" ||
-    !Number.isFinite(valor) ||
-    valor > 1_000_000 ||
-    (permiteZero
-      ? valor < 0
-      : valor <= 0)
-  ) {
-    return false;
-  }
-
-  const fator = 10 ** casas;
-
-  return (
-    Math.abs(
-      valor * fator -
-        Math.round(valor * fator),
-    ) < 1e-7
-  );
-}
-
-function dataValida(
-  valor: unknown,
-): valor is string {
-  if (
-    typeof valor !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(
-      valor,
-    )
-  ) {
-    return false;
-  }
-
-  const [ano, mes, dia] = valor
-    .split("-")
-    .map(Number);
-
-  const data = new Date(
-    Date.UTC(
-      ano,
-      mes - 1,
-      dia,
-    ),
-  );
-
-  return (
-    data.getUTCFullYear() === ano &&
-    data.getUTCMonth() === mes - 1 &&
-    data.getUTCDate() === dia
-  );
-}
-
-function hojeBrasil() {
-  const partes =
-    new Intl.DateTimeFormat(
-      "en-CA",
-      {
-        timeZone:
-          "America/Sao_Paulo",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      },
-    ).formatToParts(new Date());
-
-  const campo = (tipo: string) =>
-    partes.find(
-      (parte) =>
-        parte.type === tipo,
-    )?.value;
-
-  return `${campo("year")}-${campo("month")}-${campo("day")}`;
-}
-
-function situacao(
-  quantidade: number,
-  validade: string,
-): Product["situacao"] {
-  const hoje = hojeBrasil();
-
-  if (validade < hoje) {
-    return "vencido";
-  }
-
-  const dias =
-    (Date.parse(
-      `${validade}T12:00:00Z`,
-    ) -
-      Date.parse(
-        `${hoje}T12:00:00Z`,
-      )) /
-    86_400_000;
-
-  if (dias <= 7) {
-    return "proximo-vencimento";
-  }
-
-  if (quantidade <= 5) {
-    return "estoque-baixo";
-  }
-
-  return "normal";
-}
-
 export async function POST(
   request: NextRequest,
 ) {
   if (
     !request.headers
       .get("content-type")
-      ?.startsWith(
-        "application/json",
-      )
+      ?.startsWith("application/json")
   ) {
     return falha(
       "Envie os dados em JSON.",
@@ -179,8 +64,7 @@ export async function POST(
     );
   }
 
-  const { auth, db } =
-    firebaseAdmin();
+  const { auth, db } = firebaseAdmin();
 
   let uid: string;
 
@@ -421,22 +305,16 @@ export async function POST(
             saldoAnterior =
               anterior.quantidade;
 
-            saldoNovo =
-              Math.round(
-                (saldoAnterior +
-                  quantidade) *
-                  1000,
-              ) / 1000;
+            const calculoEntrada =
+              calcularEntradaEstoque(
+                saldoAnterior,
+                anterior.custoUnitario,
+                quantidade,
+                custoUnitario,
+              );
 
-            const custoMedio =
-              Math.round(
-                ((saldoAnterior *
-                  anterior.custoUnitario +
-                  quantidade *
-                    custoUnitario) /
-                  saldoNovo) *
-                  10_000,
-              ) / 10_000;
+            saldoNovo =
+              calculoEntrada.saldoNovo;
 
             transacao.update(
               existente.ref,
@@ -444,7 +322,7 @@ export async function POST(
                 quantidade:
                   saldoNovo,
                 custoUnitario:
-                  custoMedio,
+                  calculoEntrada.custoMedio,
                 situacao: situacao(
                   saldoNovo,
                   validade,

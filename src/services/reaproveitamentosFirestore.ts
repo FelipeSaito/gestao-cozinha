@@ -6,6 +6,7 @@ import {
   serverTimestamp, waitForPendingWrites, type Unsubscribe,
 } from "firebase/firestore";
 import { firebaseClient } from "@/lib/firebase";
+import { calcularAlteracaoAlocacaoSobraFeira } from "@/lib/saldo-sobras-feira";
 import type { ItemRetorno } from "@/services/fechamentosFirestore";
 import type { SaborPlanejado } from "@/services/planejamentosFirestore";
 
@@ -123,11 +124,21 @@ export async function salvarReaproveitamentoFirestore(
     const marcados = new Set<string>();
     for (const lote of lotes) {
       const novoValor = propostos[lote.origem] ?? 0;
-      const outrasFeiras = Object.entries(lote.alocacoes).reduce((soma, [chave, quantidade]) =>
-        soma + (chave === destino ? 0 : quantidade), 0);
-      if (novoValor + outrasFeiras + lote.descartados > lote.item.sobraram ||
-        (novoValor > 0 && !sabores.some((s) => nomeNormalizado(s.nome) === nomeNormalizado(lote.item.nome)))) {
-        throw new Error(`Saldo insuficiente ou sabor incompatível: ${lote.item.nome}. Atualize a página e revise.`);
+      const alocacaoAtual = lote.alocacoes[destino] ?? 0;
+      const totalAlocadoAtual = Object.values(lote.alocacoes)
+        .reduce((soma, quantidade) => soma + quantidade, 0);
+      try {
+        calcularAlteracaoAlocacaoSobraFeira({
+          totalSobras: lote.item.sobraram,
+          totalAlocado: totalAlocadoAtual,
+          totalDescartado: lote.descartados,
+        }, alocacaoAtual, novoValor);
+      } catch {
+        throw new Error(`Saldo insuficiente: ${lote.item.nome}. Atualize a página e revise.`);
+      }
+      if (novoValor > 0 && !sabores.some((s) =>
+        nomeNormalizado(s.nome) === nomeNormalizado(lote.item.nome))) {
+        throw new Error(`Sabor incompatível: ${lote.item.nome}. Atualize a página e revise.`);
       }
     }
     for (const sabor of sabores) {

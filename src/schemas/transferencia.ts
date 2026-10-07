@@ -14,14 +14,26 @@ export function validarTransferencia(
   saldo: number,
   unidade: string,
 ): string | null {
-  if (!Number.isFinite(quantidade) || quantidade <= 0) {
+  if (
+    !Number.isFinite(saldo) ||
+    saldo < 0
+  ) {
+    return "O saldo disponível é inválido.";
+  }
+
+  if (
+    !Number.isFinite(quantidade) ||
+    quantidade <= 0
+  ) {
     return "Informe uma quantidade maior que zero.";
   }
+
   if (quantidade > saldo) {
     return `A quantidade não pode ser maior que o saldo disponível (${formatQuantity(
       saldo,
       unidade,
     )}).`;
   }
+
   return null;
 }
