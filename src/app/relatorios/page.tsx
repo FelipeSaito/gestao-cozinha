@@ -43,7 +43,6 @@ import {
 } from "@/services/fechamentosFirestore";
 
 import {
-  listarOrdens,
   type OrdemRemota,
 } from "@/services/ordensProducao";
 
@@ -57,10 +56,8 @@ import {
   type ConsumoRegistrado,
 } from "@/services/consumosEstoque";
 
-import {
-  consultarDescartesFeira,
-  type DescartesFeira,
-} from "@/services/descartesFeira";
+import { consultarComplementoRelatorio } from "@/services/relatorios";
+import { campoCsv, type CustoOrdemRelatorio, type DescarteRelatorio } from "@/lib/relatorios";
 
 import styles from "./page.module.css";
 
@@ -215,26 +212,9 @@ function diasAtras(
     .slice(0, 10);
 }
 
-function csvCampo(
-  valor: string | number | null,
-) {
-  const texto =
-    valor === null
-      ? ""
-      : String(valor);
+const csvCampo = campoCsv;
 
-  const seguro =
-    /^[\s]*[=+\-@]/.test(texto)
-      ? `'${texto}`
-      : texto;
-
-  return `"${seguro.replace(
-    /"/g,
-    '""',
-  )}"`;
-}
-
-export default function RelatoriosPage() {
+function RelatoriosConteudo() {
   const { usuario } = useAuth();
 
   const [fim, setFim] =
@@ -291,7 +271,7 @@ export default function RelatoriosPage() {
     );
 
   const [descartes, setDescartes] =
-    useState<DescartesFeira>({});
+    useState<DescarteRelatorio[]>([]);
 
   const [
     erroDescartes,
@@ -518,6 +498,7 @@ export default function RelatoriosPage() {
           .then((dados) => {
             if (ativo) {
               setConsumos(dados);
+              setPeriodoConsumos(`${usuario?.id ?? ""}|${inicio}|${fim}`);
             }
           })
           .catch(
@@ -557,91 +538,51 @@ export default function RelatoriosPage() {
     fim,
   ]);
 
-  useEffect(() => {
-    if (!usuario?.id || !dono) {
-      return;
-    }
-
-    let ativo = true;
-
-    void consultarDescartesFeira()
-      .then((dados) => {
-        if (ativo) {
-          setDescartes(dados);
-          setErroDescartes("");
-        }
-      })
-      .catch(
-        (falha: unknown) => {
-          if (ativo) {
-            setErroDescartes(
-              falha instanceof Error
-                ? falha.message
-                : "Erro nos descartes.",
-            );
-          }
-        },
-      )
-      .finally(() => {
-        if (ativo) {
-          setCarregandoDescartes(
-            false,
-          );
-        }
-      });
-
-    return () => {
-      ativo = false;
-    };
-  }, [usuario?.id, dono]);
+  const [custosOrdens, setCustosOrdens] = useState<Record<string, CustoOrdemRelatorio>>({});
+  const [periodoComplemento, setPeriodoComplemento] = useState("");
+  const [periodoConsumos, setPeriodoConsumos] = useState("");
+  const chavePeriodo = `${usuario?.id ?? ""}|${inicio}|${fim}`;
+  const complementoAtual = periodoComplemento === chavePeriodo;
+  const consumosAtuais = periodoConsumos === chavePeriodo;
 
   useEffect(() => {
-    if (!usuario?.id || !dono) {
-      return;
-    }
-
+    if (!usuario?.id || !dono || !inicio || !fim || inicio > fim) return;
     let ativo = true;
-
-    const temporizador = window.setTimeout(
-      () => {
-        setCarregandoOrdens(true);
-
-        void listarOrdens()
-          .then((dados) => {
-            if (ativo) {
-              setOrdens(dados);
-              setErroOrdens("");
-            }
-          })
-          .catch(
-            (falha: unknown) => {
-              if (ativo) {
-                setErroOrdens(
-                  falha instanceof Error
-                    ? falha.message
-                    : "Não foi possível carregar as ordens de massa.",
-                );
-              }
-            },
-          )
-          .finally(() => {
-            if (ativo) {
-              setCarregandoOrdens(
-                false,
-              );
-            }
-          });
-      },
-      0,
-    );
-
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setCarregandoOrdens(true);
+      setCarregandoDescartes(true);
+      setErroOrdens("");
+      setErroDescartes("");
+      void consultarComplementoRelatorio(inicio, fim, controller.signal)
+        .then((dados) => {
+          if (!ativo) return;
+          setOrdens(dados.ordens);
+          setCustosOrdens(dados.custosPorOrdem);
+          setDescartes(dados.descartes);
+          setPeriodoComplemento(chavePeriodo);
+        })
+        .catch((falha: unknown) => {
+          if (!ativo) return;
+          const mensagem = falha instanceof Error ? falha.message : "Erro ao consultar relatório.";
+          setErroOrdens(mensagem);
+          setErroDescartes(mensagem);
+          setOrdens([]);
+          setCustosOrdens({});
+          setDescartes([]);
+        })
+        .finally(() => {
+          if (!ativo) return;
+          setCarregandoOrdens(false);
+          setCarregandoDescartes(false);
+        });
+    }, 0);
     return () => {
       ativo = false;
-      window.clearTimeout(
-        temporizador,
-      );
+      window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [usuario?.id, dono]);
+  }, [usuario?.id, dono, inicio, fim, chavePeriodo]);
 
   const linhas = useMemo<
     Linha[]
@@ -650,6 +591,7 @@ export default function RelatoriosPage() {
       ...Object.keys(planos),
       ...Object.keys(saidas),
       ...Object.keys(retornos),
+      ...Object.keys(producoes),
     ]);
 
     return [...chaves]
@@ -739,6 +681,7 @@ export default function RelatoriosPage() {
     planos,
     saidas,
     retornos,
+    producoes,
     feirasCadastradas,
     inicio,
     fim,
@@ -835,27 +778,8 @@ export default function RelatoriosPage() {
     consumos.length -
     custoConhecido.length;
 
-  const perdasConfirmadas =
-    linhas.reduce(
-      (total, linha) =>
-        total +
-        Object.entries(
-          descartes,
-        ).reduce(
-          (
-            soma,
-            [origem, quantidade],
-          ) =>
-            soma +
-            (origem.startsWith(
-              `${linha.chave}|`,
-            )
-              ? quantidade
-              : 0),
-          0,
-        ),
-      0,
-    );
+  const descartesFiltrados = descartes.filter((item) => !feiraId || item.feiraId === feiraId);
+  const perdasConfirmadas = descartesFiltrados.reduce((total, item) => total + item.quantidade, 0);
 
   const ordensMassa = useMemo(
     () =>
@@ -882,51 +806,7 @@ export default function RelatoriosPage() {
     [ordens, inicio, fim],
   );
 
-  const custosPorOrdem = useMemo(() => {
-    const mapa = new Map<
-      string,
-      {
-        custoTotal: number;
-        quantidadeRegistros: number;
-        registrosSemCusto: number;
-      }
-    >();
-
-    for (const consumo of consumos) {
-      if (!consumo.ordemId) {
-        continue;
-      }
-
-      const atual = mapa.get(
-        consumo.ordemId,
-      ) ?? {
-        custoTotal: 0,
-        quantidadeRegistros: 0,
-        registrosSemCusto: 0,
-      };
-
-      atual.quantidadeRegistros += 1;
-
-      if (
-        typeof consumo.custoUnitario ===
-          "number" &&
-        Number.isFinite(
-          consumo.custoUnitario,
-        ) &&
-        consumo.custoUnitario >= 0
-      ) {
-        atual.custoTotal +=
-          consumo.quantidade *
-          consumo.custoUnitario;
-      } else {
-        atual.registrosSemCusto += 1;
-      }
-
-      mapa.set(consumo.ordemId, atual);
-    }
-
-    return mapa;
-  }, [consumos]);
+  const custosPorOrdem = useMemo(() => new Map(Object.entries(custosOrdens)), [custosOrdens]);
 
   function calcularCustosMassa(
     ordem: OrdemRemota,
@@ -938,6 +818,7 @@ export default function RelatoriosPage() {
       ordem.resultadoMassa;
 
     const custoTotal =
+      complementoAtual && !erroOrdens &&
       custo &&
       custo.quantidadeRegistros > 0 &&
       custo.registrosSemCusto === 0
@@ -1142,6 +1023,8 @@ export default function RelatoriosPage() {
     baixarCsv(
       `feiras-${inicio}-a-${fim}.csv`,
       [
+        "Chave da feira",
+        "Feira ID",
         "Data",
         "Feira",
         "Responsáveis",
@@ -1150,6 +1033,8 @@ export default function RelatoriosPage() {
         "Sobras",
       ],
       linhas.map((linha) => [
+        linha.chave,
+        linha.feiraId,
         linha.data,
         linha.feira,
         linha.responsaveis,
@@ -1171,9 +1056,12 @@ export default function RelatoriosPage() {
     baixarCsv(
       `sabores-feiras-${inicio}-a-${fim}.csv`,
       [
+        "Chave da feira",
+        "Feira ID",
         "Data",
         "Feira",
         "Responsáveis",
+        "Chave normalizada do sabor",
         "Sabor",
         "Planejados",
         "Separados",
@@ -1186,9 +1074,12 @@ export default function RelatoriosPage() {
           saidas,
           retornos,
         ).map((sabor) => [
+          feira.chave,
+          feira.feiraId,
           feira.data,
           feira.feira,
           feira.responsaveis,
+          sabor.id,
           sabor.nome,
           sabor.planejados,
           sabor.separados,
@@ -1201,6 +1092,7 @@ export default function RelatoriosPage() {
   function exportarMassa() {
     if (
       !dono ||
+      !complementoAtual ||
       carregandoOrdens ||
       erroOrdens ||
       periodoInvalido ||
@@ -1215,6 +1107,7 @@ export default function RelatoriosPage() {
           calcularCustosMassa(ordem);
 
         return [
+          ordem.id,
           ordem.dataProducao,
           ordem.codigo,
           ordem.responsavel,
@@ -1238,6 +1131,7 @@ export default function RelatoriosPage() {
     baixarCsv(
       `massa-${inicio}-a-${fim}.csv`,
       [
+        "Ordem ID",
         "Data",
         "Código",
         "Responsável",
@@ -1269,30 +1163,86 @@ export default function RelatoriosPage() {
     baixarCsv(
       `estoque-${localEstoque}-${hojeBrasil()}.csv`,
       [
+        "Exportado em UTC",
+        "Produto ID",
         "Local",
         "Ingrediente",
+        "Categoria",
         "Lote",
         "Validade",
         "Quantidade",
         "Unidade",
+        "Custo unitário",
+        "Valor em estoque",
         "Situação",
       ],
       itensOrdenados.map(
         (item) => [
+          new Date().toISOString(),
+          item.id,
           localEstoque ===
           "principal"
             ? "Principal"
             : "Cozinha",
 
           item.nome,
+          item.categoria,
           item.lote,
           item.validade,
           item.quantidade,
           item.unidade,
+          Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0 ? item.custoUnitario : null,
+          Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0 ? item.quantidade * item.custoUnitario : null,
           item.situacao,
         ],
       ),
     );
+  }
+
+  const valorEstoque = itensOrdenados.reduce((total, item) =>
+    total + (Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0
+      ? item.quantidade * item.custoUnitario : 0), 0);
+  const estoqueSemCusto = itensOrdenados.some((item) =>
+    !Number.isFinite(item.custoUnitario) || item.custoUnitario < 0);
+
+  function exportarOrdens() {
+    if (!dono || !complementoAtual || carregandoOrdens || erroOrdens || periodoInvalido) return;
+    baixarCsv(`ordens-${inicio}-a-${fim}.csv`,
+      ["Ordem ID", "Código", "Data de produção", "Prato", "Categoria", "Quantidade planejada", "Unidade", "Status", "Responsável", "Custo dos insumos acumulado até a consulta", "Registros de consumo", "Consumos sem custo"],
+      ordens.map((ordem) => {
+        const custo = custosOrdens[ordem.id];
+        return [ordem.id, ordem.codigo, ordem.dataProducao, ordem.prato, ordem.categoria,
+          ordem.quantidade, ordem.unidade, ordem.status, ordem.responsavel,
+          custo && custo.quantidadeRegistros > 0 && custo.registrosSemCusto === 0 ? custo.custoTotal : null,
+          custo?.quantidadeRegistros ?? 0, custo?.registrosSemCusto ?? 0];
+      }));
+  }
+
+  function exportarConsumos() {
+    if (!dono || !consumosAtuais || carregandoCustos || erroCustos || periodoInvalido) return;
+    baixarCsv(`consumos-${inicio}-a-${fim}.csv`,
+      ["Consumo ID", "Registrado em UTC", "Produto ID", "Ordem ID", "Ordem", "Ingrediente", "Lote", "Quantidade", "Unidade", "Custo unitário", "Custo total", "Responsável", "Finalidade"],
+      consumos.map((item) => [item.id, item.registradoEm, item.produtoId, item.ordemId, item.ordemCodigo,
+        item.nome, item.lote, item.quantidade, item.unidade, item.custoUnitario,
+        typeof item.custoUnitario === "number" && Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0
+          ? item.quantidade * item.custoUnitario : null, item.registradoPor, item.finalidade]));
+  }
+
+  function exportarDescartes() {
+    if (!dono || !complementoAtual || carregandoDescartes || erroDescartes || periodoInvalido) return;
+    baixarCsv(`descartes-${inicio}-a-${fim}.csv`,
+      ["Descarte ID", "Registrado em UTC", "Data da feira de origem", "Feira ID", "Sabor ID", "Quantidade", "Motivo", "Responsável"],
+      descartesFiltrados.map((item) => [item.id, item.registradoEm, item.dataFeira, item.feiraId,
+        item.saborId, item.quantidade, item.motivo, item.registradoPor]));
+  }
+
+  function exportarProducao() {
+    if (!podeMostrar || carregandoProducao || erroProducao) return;
+    baixarCsv(`producao-feiras-${inicio}-a-${fim}.csv`,
+      ["Registro ID", "Data da feira", "Feira ID", "Sabor ID", "Funcionário ID", "Funcionário", "Quantidade"],
+      linhas.flatMap((linha) => (producoes[linha.chave] ?? []).map((item) => [
+        `${item.feira}|${item.saborId}|${item.funcionarioId}`, linha.data, linha.feiraId,
+        item.saborId, item.funcionarioId, item.funcionario, item.quantidade])));
   }
 
   return (
@@ -1438,6 +1388,30 @@ export default function RelatoriosPage() {
                   válido.
                 </p>
               )}
+            </section>
+
+            <section className={styles.panel} aria-label="Exportações detalhadas">
+              <h2>Dados para análise</h2>
+              <p>CSV em UTF-8, separado por ponto e vírgula, com ponto decimal. Datas e horas identificadas como UTC devem ser convertidas para São Paulo na análise.</p>
+              <p>Consumos abrangem toda a cozinha. Descartes usam a data do registro e respeitam a feira selecionada. Produção de feira representa o acumulado por feira, sabor e funcionário, não cada evento de produção.</p>
+              <div className={styles.heading}>
+                <Button type="button" variant="secondary" onClick={exportarOrdens}
+                  disabled={!complementoAtual || carregandoOrdens || Boolean(erroOrdens) || periodoInvalido || !ordens.length}>
+                  Exportar ordens CSV
+                </Button>
+                <Button type="button" variant="secondary" onClick={exportarConsumos}
+                  disabled={!consumosAtuais || carregandoCustos || Boolean(erroCustos) || periodoInvalido || !consumos.length}>
+                  Exportar consumos CSV
+                </Button>
+                <Button type="button" variant="secondary" onClick={exportarDescartes}
+                  disabled={!complementoAtual || carregandoDescartes || Boolean(erroDescartes) || periodoInvalido || !descartesFiltrados.length}>
+                  Exportar descartes CSV
+                </Button>
+                <Button type="button" variant="secondary" onClick={exportarProducao}
+                  disabled={!podeMostrar || carregandoProducao || Boolean(erroProducao) || !linhas.length}>
+                  Exportar produção CSV
+                </Button>
+              </div>
             </section>
 
             {erro && (
@@ -1665,7 +1639,7 @@ export default function RelatoriosPage() {
                       </span>
 
                       <strong>
-                        {erroDescartes ||
+                        {erroDescartes || !complementoAtual ||
                         carregandoDescartes
                           ? "—"
                           : perdasConfirmadas}
@@ -1675,11 +1649,11 @@ export default function RelatoriosPage() {
                     <div>
                       <span>
                         Custo de insumos
-                        consumidos
+                        consumidos (toda a cozinha)
                       </span>
 
                       <strong>
-                        {erroCustos ||
+                        {erroCustos || !consumosAtuais ||
                         carregandoCustos ||
                         !consumos.length ||
                         consumosSemCusto
@@ -1700,7 +1674,7 @@ export default function RelatoriosPage() {
                     >
                       {erroCustos}
                     </p>
-                  ) : carregandoCustos ? (
+                  ) : carregandoCustos || !consumosAtuais ? (
                     <p role="status">
                       Carregando
                       custos...
@@ -1744,17 +1718,14 @@ export default function RelatoriosPage() {
                       styles.note
                     }
                   >
-                    O descarte soma apenas
-                    pastéis efetivamente
-                    registrados como
-                    perda. Sobras podem
+                    O descarte considera a data em que a perda foi registrada, mesmo que a feira de origem seja anterior ao período. Sobras podem
                     ser reaproveitadas. O
                     custo mostrado
                     considera apenas
                     insumos consumidos,
                     sem mão de obra e
                     outras despesas; não
-                    é custo por feira.
+                    é custo por feira e não muda com o filtro de feira.
                   </p>
                 </section>
 
@@ -2039,9 +2010,7 @@ export default function RelatoriosPage() {
                     </h2>
 
                     <p>
-                      Rendimento das ordens
-                      de massa no período
-                      selecionado.
+                      Ordens pela data de produção, independentemente do filtro de feira. Custos acumulados até a consulta.
                     </p>
                   </div>
 
@@ -2049,7 +2018,8 @@ export default function RelatoriosPage() {
                     type="button"
                     variant="secondary"
                     disabled={
-                      carregandoOrdens ||
+                      !complementoAtual ||
+      carregandoOrdens ||
                       Boolean(
                         erroOrdens,
                       ) ||
@@ -2075,7 +2045,7 @@ export default function RelatoriosPage() {
                 )}
 
                 {!erroOrdens &&
-                  carregandoOrdens && (
+                  (carregandoOrdens || !complementoAtual) && (
                     <p role="status">
                       Carregando ordens de
                       massa...
@@ -2083,7 +2053,7 @@ export default function RelatoriosPage() {
                   )}
 
                 {!erroOrdens &&
-                  !carregandoOrdens && (
+                  !carregandoOrdens && complementoAtual && (
                     <>
                       <div
                         className={
@@ -2412,10 +2382,7 @@ export default function RelatoriosPage() {
                         separadamente,
                         considerando três
                         rolos por saco. Os
-                        custos consideram
-                        somente os insumos
-                        registrados na
-                        ordem; “—” indica
+                        custos consideram todos os consumos registrados na ordem, inclusive fora do período selecionado, até esta consulta. Não incluem mão de obra nem outras despesas; “—” indica
                         ausência de consumo
                         ou custo incompleto.
                       </p>
@@ -2440,7 +2407,7 @@ export default function RelatoriosPage() {
 
                   <p>
                     Saldo atual por
-                    ingrediente e lote.
+                    ingrediente e lote, atualizado pelo inventário. O CSV registra o horário de exportação, não um fechamento contábil mensal.
                     Este painel não usa o
                     filtro de período
                     acima.
@@ -2653,6 +2620,7 @@ export default function RelatoriosPage() {
                         styles.note
                       }
                     >
+                      Valor estimado deste estoque: {estoqueSemCusto ? "indisponível — há lotes sem custo válido" : formatCurrency(valorEstoque)}.
                       As quantidades têm
                       unidades diferentes;
                       por isso não há soma
@@ -2667,4 +2635,10 @@ export default function RelatoriosPage() {
       </div>
     </AppLayout>
   );
+}
+
+
+export default function RelatoriosPage() {
+  const { usuario } = useAuth();
+  return <RelatoriosConteudo key={usuario?.id ?? "sem-sessao"} />;
 }
