@@ -42,7 +42,7 @@ interface MassProductionPlannerProps {
 }
 
 const QUANTIDADES_RAPIDAS = [
-  50,
+  120,
   100,
   150,
   200,
