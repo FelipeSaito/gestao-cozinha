@@ -11,6 +11,7 @@ export const PERMISSOES: Readonly<Record<string, readonly UserRole[]>> = {
   "/estoque-principal": ["dono", "administracao"],
   "/estoque-cozinha": ["dono", "producao"],
   "/transferencias": ["dono", "administracao"],
+  "/ficha-tecnica": ["dono", "administracao", "producao"],
   "/producao": ["dono", "producao"],
   "/bar": ["dono", "administracao"],
   "/fornecedores": ["dono", "administracao"],

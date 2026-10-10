@@ -270,6 +270,8 @@ function RelatoriosConteudo() {
       [],
     );
 
+  const [periodoConsumos, setPeriodoConsumos] = useState("");
+
   const [descartes, setDescartes] =
     useState<DescarteRelatorio[]>([]);
 
@@ -540,7 +542,6 @@ function RelatoriosConteudo() {
 
   const [custosOrdens, setCustosOrdens] = useState<Record<string, CustoOrdemRelatorio>>({});
   const [periodoComplemento, setPeriodoComplemento] = useState("");
-  const [periodoConsumos, setPeriodoConsumos] = useState("");
   const chavePeriodo = `${usuario?.id ?? ""}|${inicio}|${fim}`;
   const complementoAtual = periodoComplemento === chavePeriodo;
   const consumosAtuais = periodoConsumos === chavePeriodo;

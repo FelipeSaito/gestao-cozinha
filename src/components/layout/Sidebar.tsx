@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import Link from "next/link";
@@ -13,9 +14,11 @@ import type { Route } from "next";
 import type { LucideIcon } from "lucide-react";
 
 import {
+  ChevronDown,
   ArrowLeftRight,
   BarChart3,
   ChefHat,
+  BookOpen,
   LogOut,
   MapPinned,
   Package,
@@ -38,52 +41,43 @@ interface NavItem {
   icon: LucideIcon;
 }
 
-const NAV_ITEMS: NavItem[] = [
+interface NavGroup {
+  id: string;
+  label: string;
+  items: NavItem[];
+}
+
+const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Estoque principal",
-    href: "/estoque-principal",
-    icon: Package,
+    id: "estoque", label: "Estoque",
+    items: [
+      { label: "Estoque principal", href: "/estoque-principal", icon: Package },
+      { label: "Estoque da cozinha", href: "/estoque-cozinha", icon: Utensils },
+      { label: "Transferências", href: "/transferencias", icon: ArrowLeftRight },
+      { label: "Bar", href: "/bar", icon: Wine },
+    ],
   },
   {
-    label: "Bar",
-    href: "/bar",
-    icon: Wine,
+    id: "producao", label: "Produção",
+    items: [
+      { label: "Produção", href: "/producao", icon: Soup },
+      { label: "Ficha técnica", href: "/ficha-tecnica" as Route, icon: BookOpen },
+    ],
   },
   {
-    label: "Transferências",
-    href: "/transferencias",
-    icon: ArrowLeftRight,
+    id: "feiras", label: "Feiras",
+    items: [
+      { label: "Feiras", href: "/feiras", icon: MapPinned },
+    ],
   },
   {
-    label: "Estoque da cozinha",
-    href: "/estoque-cozinha",
-    icon: Utensils,
+    id: "gestao", label: "Gestão",
+    items: [
+      { label: "Fornecedores", href: "/fornecedores", icon: Truck },
+      { label: "Relatórios", href: "/relatorios", icon: BarChart3 },
+      { label: "Equipe", href: "/equipe", icon: UsersRound },
+    ],
   },
-  {
-    label: "Produção",
-    href: "/producao",
-    icon: Soup,
-  },
-  {
-    label: "Feiras",
-    href: "/feiras",
-    icon: MapPinned,
-  },
-  {
-    label: "Fornecedores",
-    href: "/fornecedores",
-    icon: Truck,
-  },
-  {
-    label: "Relatórios",
-    href: "/relatorios",
-    icon: BarChart3,
-  },
-  {
-  label: "Equipe",
-  href: "/equipe",
-  icon: UsersRound,
-},
 ];
 
 interface SidebarProps {
@@ -105,13 +99,35 @@ export function Sidebar({
     sair,
   } = useAuth();
 
-  const itensVisiveis = useMemo(
-    () =>
-      NAV_ITEMS.filter((item) =>
-        podeAcessar(item.href),
-      ),
+  const gruposVisiveis = useMemo(
+    () => NAV_GROUPS.map((grupo) => ({
+      ...grupo,
+      items: grupo.items.filter((item) => podeAcessar(item.href)),
+    })).filter((grupo) => grupo.items.length > 0),
     [podeAcessar],
   );
+
+  // Ao mudar de página, abre a seção correspondente.
+  const [expansao, setExpansao] = useState<{
+    pathname: string;
+    grupos: Record<string, boolean>;
+  }>({ pathname, grupos: {} });
+
+  function grupoAberto(id: string, ativo: boolean) {
+    return expansao.pathname === pathname
+      ? expansao.grupos[id] ?? ativo
+      : ativo;
+  }
+
+  function alternarGrupo(id: string, aberto: boolean) {
+    setExpansao((anterior) => ({
+      pathname,
+      grupos: {
+        ...(anterior.pathname === pathname ? anterior.grupos : {}),
+        [id]: !aberto,
+      },
+    }));
+  }
 
   useEffect(() => {
     if (!open) {
@@ -179,7 +195,7 @@ export function Sidebar({
               styles.brandDescription
             }
           >
-            Organização do dia a dia
+            Painel de operações
           </p>
         </div>
       </div>
@@ -202,45 +218,64 @@ export function Sidebar({
         className={styles.nav}
         aria-label="Menu principal"
       >
-        <p
-          className={styles.navLabel}
-          id="menu-operacao"
-        >
-          Operação
-        </p>
+        {gruposVisiveis.map((grupo) => {
+          const ativo = grupo.items.some((item) =>
+            pathname === item.href || pathname.startsWith(`${item.href}/`),
+          );
 
-        <ul
-          className={styles.navList}
-          aria-labelledby="menu-operacao"
-        >
-          {itensVisiveis.map((item) => {
+          // Uma seção com apenas uma opção vira um atalho direto.
+          if (grupo.items.length === 1) {
+            const item = grupo.items[0];
             const Icon = item.icon;
-
-            const active =
-              pathname === item.href ||
-              pathname.startsWith(
-                `${item.href}/`,
-              );
-
             return (
-             <li key={item.href}>
-              <Link
-                href={item.href}
-                onClick={onNavigate}
-                className={cn(styles.link, active && styles.linkActive)}
-                aria-current={pathname === item.href ? "page" : undefined}
-              >
-                <Icon size={22} aria-hidden="true" />
+              <div key={grupo.id}>
+              <Link href={item.href} onClick={onNavigate}
+                className={cn(styles.link, styles.singleLink, ativo && styles.linkActive)}
+                aria-current={pathname === item.href ? "page" : undefined}>
+                <Icon size={19} aria-hidden="true" />
                 <span>{item.label}</span>
               </Link>
-
-              {item.href === "/producao" && (
+              {item.href === "/producao" && ativo && (
                 <ProducaoSubmenu onNavigate={onNavigate} />
               )}
-            </li>
+              </div>
             );
-          })}
-        </ul>
+          }
+
+          const aberto = grupoAberto(grupo.id, ativo);
+          return (
+            <div key={grupo.id} className={styles.group}>
+              <button type="button"
+                className={cn(styles.groupButton, ativo && styles.groupActive)}
+                aria-expanded={aberto}
+                aria-controls={`sidebar-grupo-${grupo.id}`}
+                onClick={() => alternarGrupo(grupo.id, aberto)}>
+                <span>{grupo.label}</span>
+                <ChevronDown size={16} aria-hidden="true"
+                  className={cn(styles.chevron, aberto && styles.chevronOpen)} />
+              </button>
+              <ul id={`sidebar-grupo-${grupo.id}`} className={styles.navList} hidden={!aberto}>
+                {grupo.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  return (
+                    <li key={item.href}>
+                      <Link href={item.href} onClick={onNavigate}
+                        className={cn(styles.link, active && styles.linkActive)}
+                        aria-current={pathname === item.href ? "page" : undefined}>
+                        <Icon size={19} aria-hidden="true" />
+                        <span>{item.label}</span>
+                      </Link>
+                      {item.href === "/producao" && active && (
+                        <ProducaoSubmenu onNavigate={onNavigate} />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })}
       </nav>
 
       <div className={styles.bottom}>
