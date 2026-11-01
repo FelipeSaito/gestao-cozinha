@@ -1,0 +1,188 @@
+.page {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  min-height: 100vh;
+  background: var(--color-background);
+}
+
+/* Painel de apresentação (azul-marinho) */
+.showcase {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 40px;
+  padding: 48px;
+  background: linear-gradient(
+    160deg,
+    var(--color-primary) 0%,
+    #14294a 100%
+  );
+  color: var(--color-text-inverse);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.brandMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-medium);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.showcaseBody {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.showcaseTitle {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.2;
+  max-width: 12ch;
+}
+
+.destaques {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  list-style: none;
+  padding: 0;
+}
+.destaque {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.showcaseFooter {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Lado do formulário */
+.formSide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+}
+.formCard {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.mobileBrand {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.formHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.formTitle {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+.formSubtitle {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+.toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.remember input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+.link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+
+.aviso {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--color-surface-secondary);
+  border-radius: var(--radius-medium);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 860px) {
+  .page {
+    grid-template-columns: 1fr;
+  }
+  .showcase {
+    display: none;
+  }
+  .mobileBrand {
+    display: flex;
+  }
+}

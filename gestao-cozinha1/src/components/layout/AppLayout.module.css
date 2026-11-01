@@ -1,0 +1,131 @@
+.shell {
+  display: grid;
+  grid-template-columns:
+    var(--sidebar-width)
+    minmax(0, 1fr);
+
+  min-height: 100vh;
+  min-height: 100dvh;
+
+  background: var(--color-background);
+}
+
+.navigation {
+  min-width: 0;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-6);
+
+  /* Evita que o cabeçalho cubra o destino do atalho. */
+  scroll-margin-top: calc(
+    var(--header-height) + var(--space-6)
+  );
+}
+
+.backdrop,
+.mobileActions {
+  display: none;
+}
+
+/* Atalho disponível ao navegar pelo teclado */
+
+.skipLink {
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 100;
+
+  display: flex;
+  align-items: center;
+
+  min-height: var(--touch-target);
+  max-width: calc(100vw - var(--space-6));
+  padding: var(--space-3) var(--space-4);
+
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius-medium);
+
+  background: var(--color-surface);
+  color: var(--color-primary);
+
+  font-weight: var(--font-weight-bold);
+
+  transform: translateY(
+    calc(-100% - var(--space-6))
+  );
+}
+
+.skipLink:focus {
+  transform: translateY(0);
+}
+
+/* Tablet compacto e celular */
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /*
+   * O painel é fixo dentro da Sidebar.
+   * Seu contêiner não ocupa uma linha no grid.
+   */
+  .navigation {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 60;
+  }
+
+  .backdrop {
+    display: block;
+
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+
+    background: rgb(15 23 42 / 55%);
+    touch-action: none;
+  }
+
+  .content {
+    padding: var(--space-4);
+  }
+
+  .mobileActions {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+
+    padding:
+      var(--space-4)
+      var(--space-4)
+      0;
+  }
+
+  .mobileActions > * {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .mobileActions {
+    flex-direction: column;
+  }
+
+  .mobileActions > * {
+    flex: 0 1 auto;
+    width: 100%;
+  }
+}

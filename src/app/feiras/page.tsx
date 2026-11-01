@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   CalendarDays,
@@ -53,8 +53,6 @@ import {
   feirasExtrasNaData,
 } from "@/services/useFeirasCadastradas";
 import type { FeiraCadastrada } from "@/services/feirasCadastradas";
-import { chaveSabor, nomeSabor } from "@/lib/nomesSabores";
-import { consultarDescartesFeira, registrarDescarteFeira, type DescartesFeira } from "@/services/descartesFeira";
 
 import styles from "./page.module.css";
 
@@ -72,7 +70,7 @@ function chaveDaSobra(chaveOrigem: string, saborId: string) {
 }
 
 function nomeNormalizado(nome: string) {
-  return chaveSabor(nome);
+  return nome.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 }
 
 function feirasDaData(dataIso: string, extras: FeiraCadastrada[]): FeiraProgramada[] {
@@ -109,7 +107,59 @@ const SABORES_CEREJEIRAS: SaborPlanejado[] = [
   { id: "padrao-chcolate", nome: "chcolate", quantidade: 2 },
   { id: "padrao-doce", nome: "doce", quantidade: 2 },
   { id: "padrao-especial", nome: "especial", quantidade: 12 },
+  { id: "padrao-palmito", nome: "palmito", quantidade: 10 },
+  { id: "padrao-marguerita", nome: "marguerita", quantidade: 4 },
 ];
+
+// Mantém os mesmos identificadores e nomes usados pelo catálogo existente.
+const SABORES_LARANJEIRA: SaborPlanejado[] = [
+  ["padrao-carne", 40], ["padrao-queijo", 40], ["padrao-pizza", 40],
+  ["padrao-fc", 40], ["padrao-calabresa", 20], ["padrao-cq", 30],
+  ["padrao-ovo", 8], ["padrao-cchded", 8], ["padrao-bauru", 15],
+  ["padrao-seca", 12], ["padrao-poro", 10], ["padrao-escarola", 4],
+  ["padrao-pernil", 5], ["padrao-costela", 12], ["padrao-especial", 12],
+  ["padrao-palmito", 8], ["padrao-marguerita", 4],
+].map(([id, quantidade]) => {
+  const sabor = SABORES_CEREJEIRAS.find((item) => item.id === id)!;
+  return { ...sabor, quantidade: Number(quantidade) };
+});
+
+// null: sem quantidade fixa; mantém o que já foi planejado manualmente.
+const COMPLEMENTOS_FEIRAS: Record<string, { palmito: number; marguerita: number | null }> = {
+  "parque da serra": { palmito: 4, marguerita: 3 },
+  castanheira: { palmito: 8, marguerita: 4 },
+  bela: { palmito: 0, marguerita: 0 },
+  cenarios: { palmito: 4, marguerita: null },
+  macedonia: { palmito: 3, marguerita: null },
+  "santa clara": { palmito: 2, marguerita: null },
+  embu: { palmito: 3, marguerita: null },
+};
+
+function padraoDaFeira(
+  feira: FeiraProgramada,
+  atuais: SaborPlanejado[] = [],
+): SaborPlanejado[] | undefined {
+  const nomes = [nomeNormalizado(feira.id).replace(/-/g, " "), nomeNormalizado(feira.nome)];
+  if (nomes.some((nome) => ["cerejeira", "cerejeiras"].includes(nome))) {
+    return SABORES_CEREJEIRAS;
+  }
+  if (nomes.some((nome) => ["laranjeira", "laranjeiras"].includes(nome))) {
+    return SABORES_LARANJEIRA;
+  }
+  const complemento = nomes.map((nome) => COMPLEMENTOS_FEIRAS[nome]).find(Boolean);
+  // Não inventar um planejamento completo usando apenas os dois novos sabores.
+  if (!complemento || atuais.length === 0) return undefined;
+  let itens = atuais.map((item) => ({ ...item }));
+  for (const nome of ["palmito", "marguerita"] as const) {
+    const quantidade = complemento[nome];
+    if (quantidade === null) continue;
+    const id = `padrao-${nome}`;
+    const existente = itens.find((item) => item.id === id || nomeNormalizado(item.nome) === nome);
+    itens = itens.filter((item) => item.id !== id && nomeNormalizado(item.nome) !== nome);
+    if (quantidade > 0) itens.push({ id: existente?.id ?? id, nome: existente?.nome ?? nome, quantidade });
+  }
+  return itens;
+}
 
 function ReaproveitamentoFeira({
   chaveDestino,
@@ -159,7 +209,7 @@ function ReaproveitamentoFeira({
         (total, [chave, itens]) => total + (chave === chaveDestino ? 0 : (itens[origem.id] ?? 0)), 0,
       );
       if (!Number.isSafeInteger(quantidade) || quantidade < 0 || quantidade > origem.total - usadosEmOutrasFeiras) {
-        setErro(`Confira a quantidade de ${nomeSabor(origem.nome)} de ${origem.feira}: o saldo disponível foi ultrapassado.`);
+        setErro(`Confira a quantidade de ${origem.nome} de ${origem.feira}: o saldo disponível foi ultrapassado.`);
         return;
       }
       if (quantidade > 0) proximo[origem.id] = quantidade;
@@ -169,7 +219,7 @@ function ReaproveitamentoFeira({
         total + (nomeNormalizado(origem.nome) === nomeNormalizado(sabor.nome) ? (proximo[origem.id] ?? 0) : 0), 0,
       );
       if (quantidade > sabor.quantidade) {
-        setErro(`O reaproveitamento de ${nomeSabor(sabor.nome)} supera os ${sabor.quantidade} pastéis previstos para esta feira.`);
+        setErro(`O reaproveitamento de ${sabor.nome} supera os ${sabor.quantidade} pastéis previstos para esta feira.`);
         return;
       }
     }
@@ -202,7 +252,7 @@ function ReaproveitamentoFeira({
           );
           return (
             <label key={origem.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, paddingBlock: 8, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
-              <span><strong>{nomeSabor(origem.nome)}</strong><br /><small>{origem.feira} · {origem.data.split("-").reverse().join("/")} · disponível: {Math.max(0, origem.total - outros)}</small></span>
+              <span><strong>{origem.nome}</strong><br /><small>{origem.feira} · {origem.data.split("-").reverse().join("/")} · disponível: {Math.max(0, origem.total - outros)}</small></span>
               <span style={{ display: "grid", gap: 4 }}>Usar nesta feira
                 <input type="number" min={0} step={1} inputMode="numeric" value={valores[origem.id] ?? ""}
                   onChange={(event) => { setValores((atual) => ({ ...atual, [origem.id]: event.target.value })); setErro(""); }}
@@ -242,7 +292,7 @@ function RegistroProducaoFeira({
   async function salvar(sabor: SaborPlanejado) {
     const texto = valores[sabor.id]?.trim() ?? "";
     if (texto === "" || !/^\d+$/.test(texto)) {
-      setErro(`Informe quantos pastéis de ${nomeSabor(sabor.nome)} você produziu. Digite 0 para corrigir o registro.`);
+      setErro(`Informe quantos pastéis de ${sabor.nome} você produziu. Digite 0 para corrigir o registro.`);
       return;
     }
     const quantidade = Number(texto);
@@ -250,7 +300,7 @@ function RegistroProducaoFeira({
       .reduce((soma, item) => soma + item.quantidade, 0);
     if (!Number.isSafeInteger(quantidade) || quantidade < 0 ||
         quantidade + colegas > limitePorSabor[sabor.id]) {
-      setErro(`O total produzido de ${nomeSabor(sabor.nome)} ultrapassa os ${limitePorSabor[sabor.id]} pastéis a preparar.`);
+      setErro(`O total produzido de ${sabor.nome} ultrapassa os ${limitePorSabor[sabor.id]} pastéis a preparar.`);
       return;
     }
     setSalvando(sabor.id);
@@ -273,7 +323,7 @@ function RegistroProducaoFeira({
           .reduce((soma, item) => soma + item.quantidade, 0);
         return (
           <div key={sabor.id} style={{ display: "grid", gap: 6, borderBottom: "1px solid var(--color-border, #dfe5ec)", paddingBlock: 10 }}>
-            <strong>{nomeSabor(sabor.nome)}: {total} de {limitePorSabor[sabor.id]} a preparar</strong>
+            <strong>{sabor.nome}: {total} de {limitePorSabor[sabor.id]} a preparar</strong>
             <small>{registros.filter((item) => item.saborId === sabor.id && item.quantidade > 0)
               .map((item) => `${item.funcionario}: ${item.quantidade}`).join(" · ") || "Nenhum registro"}</small>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "end", gap: 8 }}>
@@ -303,19 +353,17 @@ function PlanejadorSabores({
   bloqueado: boolean;
   onSalvar: (itens: SaborPlanejado[]) => Promise<void>;
 }) {
-  const catalogo = [
-    ...SABORES_CEREJEIRAS,
-    ...sabores.filter((atual) =>
-      !SABORES_CEREJEIRAS.some((padrao) =>
-        chaveSabor(padrao.nome) === chaveSabor(atual.nome),
-      ),
-    ),
-  ];
+  // Prioriza o registro salvo: um mesmo ID pode ter recebido um nome completo.
+  const catalogo = [...sabores, ...SABORES_CEREJEIRAS].filter(
+    (sabor, indice, todos) => todos.findIndex((item) =>
+      item.id === sabor.id || nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome),
+    ) === indice,
+  );
   const [selecionados, setSelecionados] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, sabores.some((atual) => chaveSabor(atual.nome) === chaveSabor(sabor.nome))])),
+    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, sabores.some((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))])),
   );
   const [quantidades, setQuantidades] = useState<Record<string, string>>(() =>
-    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, String(sabores.find((atual) => chaveSabor(atual.nome) === chaveSabor(sabor.nome))?.quantidade ?? "")])),
+    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, String(sabores.find((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))?.quantidade ?? "")])),
   );
   const [erroPlanejamento, setErroPlanejamento] = useState("");
   const [salvando, setSalvando] = useState(false);
@@ -336,8 +384,8 @@ function PlanejadorSabores({
     setSalvando(true);
     try {
       await onSalvar(escolhidos.map((sabor) => ({
-      id: sabores.find((atual) => chaveSabor(atual.nome) === chaveSabor(sabor.nome))?.id ?? sabor.id,
-      nome: nomeSabor(sabor.nome),
+      id: sabores.find((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))?.id ?? sabor.id,
+      nome: sabor.nome,
       quantidade: Number(quantidades[sabor.nome]),
       })));
       setErroPlanejamento("");
@@ -364,7 +412,7 @@ function PlanejadorSabores({
                   setSelecionados((atual) => ({ ...atual, [sabor.nome]: event.target.checked }));
                   setErroPlanejamento("");
                 }} style={{ width: 22, height: 22 }} />
-                <strong>{nomeSabor(sabor.nome)}</strong>
+                <strong>{sabor.nome}</strong>
               </label>
               {marcado && (
                 <label style={{ display: "grid", gap: 4 }}>
@@ -504,7 +552,7 @@ function ConferenciaSaida({
         <span style={{ fontSize: 14 }}>Por {registro.conferidoPor} em {new Date(registro.conferidoEm).toLocaleString("pt-BR")}</span>
         {registro.itens.map((item) => (
           <span key={item.saborId}>
-            {nomeSabor(item.nome)}: {item.separado} separados (previstos: {item.previsto})
+            {item.nome}: {item.separado} separados (previstos: {item.previsto})
           </span>
         ))}
         {retornoRegistrado && <p>Para alterar a saída, será preciso corrigir primeiro o fechamento desta feira.</p>}
@@ -531,7 +579,7 @@ function ConferenciaSaida({
       <p>Informe o que foi colocado na pirua. Zero significa que o sabor não saiu.</p>
       {sabores.map((sabor) => (
         <label key={sabor.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <span><strong>{nomeSabor(sabor.nome)}</strong><br /><small>Previstos: {sabor.quantidade}</small></span>
+          <span><strong>{sabor.nome}</strong><br /><small>Previstos: {sabor.quantidade}</small></span>
           <span style={{ display: "grid", gap: 4 }}>
             <span>Separados</span>
             <input type="number" min={0} step={1} inputMode="numeric"
@@ -620,9 +668,9 @@ function FechamentoFeira({
         <small>Não retornaram = separados − sobras. Confira vendas e perdas fora desta tela.</small>
         <span style={{ fontSize: 14 }}>Por {retorno.registradoPor} em {new Date(retorno.registradoEm).toLocaleString("pt-BR")}</span>
         {retorno.itens.map((item) => (
-          <span key={item.saborId}>{nomeSabor(item.nome)}: {item.sobraram} sobraram e foram guardados</span>
+          <span key={item.saborId}>{item.nome}: {item.sobraram} sobraram e foram guardados</span>
         ))}
-        {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas ou descartadas. Peça ao Dono para revisar os registros antes de corrigir.</p>}
+        {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas a outra feira. Peça ao Dono para revisar os registros antes de corrigir.</p>}
         <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
           setSobras(Object.fromEntries(retorno.itens.map((item) => [item.saborId, String(item.sobraram)])));
           setEditando(true);
@@ -637,7 +685,7 @@ function FechamentoFeira({
       <p>Conte os pastéis que voltaram. Todas as sobras serão guardadas na geladeira.</p>
       {saida.itens.map((item) => (
         <div key={item.saborId} style={{ display: "grid", gap: 10, paddingBlock: 10, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
-          <strong>{nomeSabor(item.nome)} · {item.separado} saíram</strong>
+          <strong>{item.nome} · {item.separado} saíram</strong>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
             <label style={{ display: "grid", gap: 4 }}>Sobraram
               <input type="number" min={0} max={item.separado} step={1} inputMode="numeric"
@@ -658,69 +706,6 @@ function FechamentoFeira({
   );
 }
 
-function DescarteFeira({ chave, retorno, usos, descartes, onSaved }: {
-  chave: string;
-  retorno: RegistroRetorno;
-  usos: Reaproveitamentos;
-  descartes: DescartesFeira;
-  onSaved: () => Promise<void>;
-}) {
-  const [saborId, setSaborId] = useState(retorno.itens[0]?.saborId ?? "");
-  const [quantidade, setQuantidade] = useState("");
-  const [motivo, setMotivo] = useState("");
-  const [erro, setErro] = useState("");
-  const [salvando, setSalvando] = useState(false);
-  const [operacaoId, setOperacaoId] = useState<string | null>(null);
-  const item = retorno.itens.find((registro) => registro.saborId === saborId);
-  const origem = `${chave}|${saborId}`;
-  const alocados = Object.values(usos).reduce((total, destino) => total + (destino[origem] ?? 0), 0);
-  const disponiveis = Math.max(0, (item?.sobraram ?? 0) - alocados - (descartes[origem] ?? 0));
-
-  async function confirmar() {
-    const numero = Number(quantidade);
-    if (!Number.isSafeInteger(numero) || numero < 1 || numero > disponiveis || motivo.trim().length < 5) {
-      setErro("Informe uma quantidade disponível e o motivo do descarte (mínimo de 5 caracteres).");
-      return;
-    }
-    setSalvando(true);
-    setErro("");
-    const id = operacaoId ?? crypto.randomUUID();
-    setOperacaoId(id);
-    try {
-      await registrarDescarteFeira(origem, numero, motivo.trim(), id);
-      await onSaved();
-      setOperacaoId(null);
-      setQuantidade("");
-      setMotivo("");
-    } catch (falha) {
-      setErro(falha instanceof Error ? falha.message : "Não foi possível registrar o descarte.");
-    } finally { setSalvando(false); }
-  }
-
-  return <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, border: "1px solid var(--color-border)", borderRadius: 12 }}>
-    <strong>Registrar perda por descarte</strong>
-    <label>Pastel
-      <select value={saborId} onChange={(evento) => { setSaborId(evento.target.value); setOperacaoId(null); }}>
-        {retorno.itens.filter((registro) => registro.sobraram > 0).map((registro) =>
-          <option key={registro.saborId} value={registro.saborId}>{nomeSabor(registro.nome)}</option>)}
-      </select>
-    </label>
-    <span>Disponíveis para descarte: {disponiveis}</span>
-    <label>Quantidade
-      <input type="number" min={1} max={disponiveis} step={1} value={quantidade}
-        onChange={(evento) => { setQuantidade(evento.target.value); setOperacaoId(null); }} />
-    </label>
-    <label>Motivo
-      <input maxLength={200} value={motivo} placeholder="Ex.: produto danificado"
-        onChange={(evento) => { setMotivo(evento.target.value); setOperacaoId(null); }} />
-    </label>
-    {erro && <p role="alert">{erro}</p>}
-    <Button type="button" variant="secondary" disabled={salvando || disponiveis === 0} onClick={confirmar}>
-      {salvando ? "Registrando..." : "Registrar descarte"}
-    </Button>
-  </div>;
-}
-
 export default function FeirasPage() {
   const { usuario, carregando } = useAuth();
   const router = useRouter();
@@ -729,7 +714,6 @@ export default function FeirasPage() {
   const [dataSelecionada, setDataSelecionada] = useState(
     () => dataLocalISO(new Date()),
   );
-  const [responsavelSelecionado, setResponsavelSelecionado] = useState("");
   const [calendarioAberto, setCalendarioAberto] = useState(false);
   const [mesVisivel, setMesVisivel] = useState(() => {
     const hoje = new Date();
@@ -738,6 +722,11 @@ export default function FeirasPage() {
 
   const [planejamentos, setPlanejamentos] =
     useState<Planejamentos>({});
+  const travaPadrao = useRef(false);
+  const [salvandoPadrao, setSalvandoPadrao] = useState<string | null>(null);
+  const [feedbackPadrao, setFeedbackPadrao] = useState<{
+    chave: string; texto: string; erro: boolean;
+  } | null>(null);
   const [planosLocais, setPlanosLocais] = useState<Planejamentos>({});
   const [planosSincronizados, setPlanosSincronizados] = useState(false);
   const [erroSincronizacao, setErroSincronizacao] = useState("");
@@ -749,8 +738,6 @@ export default function FeirasPage() {
   const [importandoSaidas, setImportandoSaidas] = useState(false);
   const [saidaAberta, setSaidaAberta] = useState<string | null>(null);
   const [retornos, setRetornos] = useState<Retornos>({});
-  const [descartes, setDescartes] = useState<DescartesFeira>({});
-  const [erroDescartes, setErroDescartes] = useState("");
   const [retornosLocais, setRetornosLocais] = useState<Retornos>({});
   const [fechamentosSincronizados, setFechamentosSincronizados] = useState(false);
   const [erroFechamentos, setErroFechamentos] = useState("");
@@ -766,17 +753,6 @@ export default function FeirasPage() {
   const [erroProducao, setErroProducao] = useState("");
   const [producaoAberta, setProducaoAberta] = useState<string | null>(null);
   const [retornoAberto, setRetornoAberto] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!usuario?.perfis.includes("dono")) return;
-    let ativo = true;
-    void consultarDescartesFeira().then((dados) => {
-      if (ativo) { setDescartes(dados); setErroDescartes(""); }
-    }).catch((falha: unknown) => {
-      if (ativo) setErroDescartes(falha instanceof Error ? falha.message : "Não foi possível consultar descartes.");
-    });
-    return () => { ativo = false; };
-  }, [usuario?.id, usuario?.perfis]);
 
   const [feiraAberta, setFeiraAberta] =
     useState<string | null>(null);
@@ -1005,11 +981,77 @@ export default function FeirasPage() {
   async function salvarPlanejamento(chave: string, itens: SaborPlanejado[]) {
     if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode planejar feiras.");
     if (!planosSincronizados) throw new Error("Aguarde a conexão com o Firestore.");
-    await salvarPlanejamentoFirestore(chave, itens.map((item) => ({
-      ...item,
-      nome: nomeSabor(item.nome),
-    })));
+    await salvarPlanejamentoFirestore(chave, itens);
     setFeiraAberta(null);
+  }
+
+  async function planejarPadrao(feira: FeiraProgramada, chave: string) {
+    if (travaPadrao.current) return;
+    setFeedbackPadrao(null);
+    try {
+      if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode planejar feiras.");
+      if (!planosSincronizados || !saidasSincronizadas || !fechamentosSincronizados ||
+          !usosSincronizados || !producoesSincronizadas) {
+        throw new Error("Aguarde a sincronização com o Firestore.");
+      }
+      if (retornos[chave]) throw new Error("Esta feira já foi fechada.");
+      const padrao = padraoDaFeira(feira, planejamentos[chave] ?? []);
+      if (!padrao) throw new Error("Esta feira ainda não tem um planejamento padrão.");
+      const atuais = planejamentos[chave] ?? [];
+      const itens = padrao.map((sabor) => {
+        const existente = atuais.find((item) => item.id === sabor.id) ??
+          atuais.find((item) => nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome));
+        return { ...sabor, id: existente?.id ?? sabor.id, nome: existente?.nome ?? sabor.nome };
+      });
+      // Preserva os vínculos da produção e das sobras já destinadas.
+      for (const registro of producoes[chave] ?? []) {
+        const previsto = itens.find((item) => item.id === registro.saborId);
+        const produzido = (producoes[chave] ?? [])
+          .filter((item) => item.saborId === registro.saborId)
+          .reduce((total, item) => total + item.quantidade, 0);
+        if (produzido > 0 && (!previsto || produzido > previsto.quantidade)) {
+          throw new Error("O padrão é incompatível com a produção registrada. Ajuste o planejamento manualmente.");
+        }
+      }
+      const reaproveitados: Record<string, number> = {};
+      for (const [origem, quantidade] of Object.entries(reaproveitamentos[chave] ?? {})) {
+        if (quantidade <= 0) continue;
+        const separador = origem.lastIndexOf("|");
+        const item = retornos[origem.slice(0, separador)]?.itens
+          .find((candidato) => candidato.saborId === origem.slice(separador + 1));
+        const previsto = item && itens.find((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
+        if (!previsto) throw new Error("Revise o reaproveitamento antes de aplicar este padrão.");
+        reaproveitados[previsto.id] = (reaproveitados[previsto.id] ?? 0) + quantidade;
+      }
+      for (const item of itens) {
+        const produzido = (producoes[chave] ?? [])
+          .filter((registro) => registro.saborId === item.id)
+          .reduce((total, registro) => total + registro.quantidade, 0);
+        if (produzido + (reaproveitados[item.id] ?? 0) > item.quantidade) {
+          throw new Error("A produção e o reaproveitamento superam o padrão. Ajuste o planejamento manualmente.");
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(planejamentos, chave) || saidas[chave]) {
+        const data = chave.split(":")[0].split("-").reverse().join("/");
+        if (!window.confirm(
+          `Substituir o planejamento de ${feira.nome} em ${data} pelo padrão? Ele será salvo automaticamente.` +
+          (saidas[chave] ? " A saída poderá precisar de nova conferência." : ""),
+        )) return;
+      }
+      travaPadrao.current = true;
+      setSalvandoPadrao(chave);
+      await salvarPlanejamento(chave, itens);
+      setPlanejamentos((atual) => ({ ...atual, [chave]: itens }));
+      setFeedbackPadrao({ chave, texto: "Planejamento padrão salvo com sucesso.", erro: false });
+    } catch (erro) {
+      setFeedbackPadrao({
+        chave, erro: true,
+        texto: erro instanceof Error ? erro.message : "Não foi possível salvar o planejamento padrão.",
+      });
+    } finally {
+      travaPadrao.current = false;
+      setSalvandoPadrao(null);
+    }
   }
 
   async function importarPlanos() {
@@ -1104,19 +1146,6 @@ export default function FeirasPage() {
   }).format(mesVisivel);
   const data = dataDoCampo(dataSelecionada);
   const feiras = data ? feirasDaData(dataSelecionada, feirasCadastradas) : [];
-  const responsaveisDoDia = Array.from(
-    new Set(feiras.flatMap((feira) => feira.responsaveis.map((nome) => nome.trim()).filter(Boolean))),
-  ).sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const feirasVisiveis = responsavelSelecionado
-    ? feiras.filter((feira) => feira.responsaveis.some(
-        (nome) => nomeNormalizado(nome) === nomeNormalizado(responsavelSelecionado),
-      ))
-    : feiras;
-  const idsRepetidos = Array.from(
-    new Set(feiras.filter((feira, indice) =>
-      feiras.findIndex((outra) => outra.id === feira.id) !== indice,
-    ).map((feira) => feira.id)),
-  );
 
   const dataFormatada = data
     ? new Intl.DateTimeFormat("pt-BR", {
@@ -1142,15 +1171,6 @@ export default function FeirasPage() {
       }),
     )
     .sort((a, b) => b.data.localeCompare(a.data));
-  const totalSobrasAnteriores = sobrasAnteriores.reduce(
-    (total, sobra) => total + sobra.quantidade, 0,
-  );
-  const temImportacoesAntigas = usuario.perfis.includes("dono") && (
-    Object.keys(usosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(reaproveitamentos, chave)) ||
-    Object.keys(retornosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(retornos, chave)) ||
-    Object.keys(planosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(planejamentos, chave)) ||
-    Object.keys(saidasLocais).some((chave) => !Object.prototype.hasOwnProperty.call(saidas, chave))
-  );
 
   return (
     <AppLayout
@@ -1176,57 +1196,47 @@ export default function FeirasPage() {
             {erroFeirasCadastradas}
           </p>
         )}
-        {temImportacoesAntigas && (
-          <details className={styles.importPanel}>
-            <summary>Importar dados antigos deste navegador</summary>
-            <p>Use estas opções somente se houver registros antigos para recuperar.</p>
-            <div className={styles.importActions}>
+        <section style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10, background: "var(--color-surface)" }}>
+          <p>Planejamentos, produção, saídas, fechamentos e reaproveitamentos sincronizados. Cada lote mostra o saldo disponível antes de destinar a outra feira.</p>
           {usuario.perfis.includes("dono") &&
             Object.keys(usosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(reaproveitamentos, chave)) && (
-              <Button className={styles.importButton} type="button" variant="secondary" disabled={importandoUsos} onClick={importarUsos}>
+              <Button type="button" variant="secondary" disabled={importandoUsos} onClick={importarUsos}>
                 {importandoUsos ? "Importando usos..." : "Importar reaproveitamentos antigos deste navegador"}
               </Button>
             )}
           {usuario.perfis.includes("dono") &&
             Object.keys(retornosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(retornos, chave)) && (
-              <Button className={styles.importButton} type="button" variant="secondary" disabled={importandoFechamentos} onClick={importarFechamentos}>
+              <Button type="button" variant="secondary" disabled={importandoFechamentos} onClick={importarFechamentos}>
                 {importandoFechamentos ? "Importando fechamentos..." : "Importar fechamentos antigos deste navegador"}
               </Button>
             )}
           {usuario.perfis.includes("dono") &&
             Object.keys(planosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(planejamentos, chave)) && (
-              <Button className={styles.importButton} type="button" variant="secondary" disabled={importando} onClick={importarPlanos}>
+              <Button type="button" variant="secondary" disabled={importando} onClick={importarPlanos}>
                 {importando ? "Importando..." : "Importar planejamentos antigos deste navegador"}
               </Button>
             )}
           {usuario.perfis.includes("dono") &&
             Object.keys(saidasLocais).some((chave) => !Object.prototype.hasOwnProperty.call(saidas, chave)) && (
-              <Button className={styles.importButton} type="button" variant="secondary" disabled={importandoSaidas} onClick={importarSaidas}>
+              <Button type="button" variant="secondary" disabled={importandoSaidas} onClick={importarSaidas}>
                 {importandoSaidas ? "Importando saídas..." : "Importar saídas antigas deste navegador"}
               </Button>
             )}
-            </div>
-          </details>
-        )}
+        </section>
         {!modoFuncionario && sobrasAnteriores.length > 0 && (
-          <details className={styles.sobrasPanel}>
-            <summary className={styles.sobrasSummary}>
-              <span><strong>Sobras de feiras anteriores</strong><small>Consulte os sabores, a data e a feira de origem</small></span>
-              <span className={styles.sobrasBadge}>{totalSobrasAnteriores} pastéis registrados · {sobrasAnteriores.length} itens</span>
-            </summary>
-            <div className={styles.sobrasContent}>
-            <p>Confira a origem antes de planejar o reaproveitamento. Este resumo não desconta pastéis do saldo.</p>
-            <ul className={styles.sobrasList}>
+          <section aria-labelledby="titulo-sobras" style={{ display: "grid", gap: 12, padding: 16, border: "1px solid var(--color-border)", borderRadius: "var(--radius-large)", background: "var(--color-surface)" }}>
+            <h2 id="titulo-sobras" style={{ fontSize: 18 }}>Sobras registradas de feiras anteriores</h2>
+            <p style={{ color: "var(--color-text-secondary)" }}>Confira a data e a origem antes de planejar qualquer reaproveitamento. Este painel ainda não desconta pastéis.</p>
+            <ul style={{ display: "grid", gap: 8, padding: 0, listStyle: "none" }}>
               {sobrasAnteriores.map((sobra) => (
-                <li key={sobra.id} className={styles.sobraItem}>
-                  <strong>{nomeSabor(sobra.sabor)}</strong>
+                <li key={sobra.id} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, padding: 12, border: "1px solid var(--color-border)", borderRadius: "var(--radius-medium)" }}>
+                  <strong>{sobra.sabor}</strong>
                   <span>{sobra.quantidade} pastéis</span>
                   <small>{sobra.feira} · {sobra.data.split("-").reverse().join("/")}</small>
                 </li>
               ))}
             </ul>
-            </div>
-          </details>
+          </section>
         )}
         <section className={styles.intro} style={{ alignItems: "flex-start" }}>
           <div>
@@ -1329,41 +1339,14 @@ export default function FeirasPage() {
               "Selecione uma data"}
           </h3>
 
-          {feiras.length > 0 && (
-            <label style={{ display: "grid", gap: 8, width: "min(100%, 330px)", marginBottom: 16, fontWeight: 600 }}>
-              Responsável
-              <select
-                value={responsavelSelecionado}
-                onChange={(event) => setResponsavelSelecionado(event.target.value)}
-                style={{ minHeight: 48, padding: "8px 12px", border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 10, background: "var(--color-surface, white)", color: "var(--color-text-primary, #17243a)", font: "inherit" }}
-              >
-                <option value="">Todos os responsáveis ({feiras.length} feiras)</option>
-                {responsaveisDoDia.map((nome) => (
-                  <option key={nome} value={nome}>{nome}</option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {idsRepetidos.length > 0 && (
-            <p role="alert" style={{ marginBottom: 16, color: "var(--color-danger, #b42318)" }}>
-              Há feiras com o mesmo identificador ({idsRepetidos.join(", ")}).
-              Cadastre cada feira separadamente para manter planejamentos independentes.
-            </p>
-          )}
-
           {feiras.length === 0 ? (
             <div className={styles.empty}>
               Nenhuma feira ou evento programado
               para este dia.
             </div>
-          ) : feirasVisiveis.length === 0 ? (
-            <div className={styles.empty}>
-              Nenhuma feira deste responsável nesta data. Selecione “Todos os responsáveis”.
-            </div>
           ) : (
             <div className={styles.grid}>
-              {feirasVisiveis.map((feira) => {
+              {feiras.map((feira) => {
                 const chave = chaveDaFeira(
                   dataSelecionada,
                   feira.id,
@@ -1471,7 +1454,7 @@ export default function FeirasPage() {
                           <ul id={`sabores-${feira.id}`} style={{ width: "100%", margin: 0, padding: 0, listStyle: "none" }}>
                             {sabores.map((sabor) => (
                               <li key={sabor.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
-                                <span>{nomeSabor(sabor.nome)}</span><strong>{sabor.quantidade}</strong>
+                                <span>{sabor.nome}</span><strong>{sabor.quantidade}</strong>
                               </li>
                             ))}
                           </ul>
@@ -1482,7 +1465,7 @@ export default function FeirasPage() {
                       <div style={{ display: "grid", gap: 4 }}>
                         <strong>Da geladeira / a preparar</strong>
                         {totaisReaproveitados.filter((item) => item.usado > 0).map((item) => (
-                          <span key={item.nome}>{nomeSabor(item.nome)}: {item.usado} da geladeira + {item.previsto - item.usado} a preparar = {item.previsto} previstos</span>
+                          <span key={item.nome}>{item.nome}: {item.usado} da geladeira + {item.previsto - item.usado} a preparar = {item.previsto} previstos</span>
                         ))}
                       </div>
                     )}
@@ -1493,7 +1476,7 @@ export default function FeirasPage() {
                           const registros = registrosDaFeira.filter((item) => item.saborId === sabor.id);
                           const totalProduzido = registros.reduce((soma, item) => soma + item.quantidade, 0);
                           if (registros.length === 0) return null;
-                          return <span key={sabor.id}>{nomeSabor(sabor.nome)}: {totalProduzido} de {limitePorSabor[sabor.id]} a preparar
+                          return <span key={sabor.id}>{sabor.nome}: {totalProduzido} de {limitePorSabor[sabor.id]} a preparar
                             {registros.filter((item) => item.quantidade > 0).length > 0 &&
                               ` · ${registros.filter((item) => item.quantidade > 0).map((item) => `${item.funcionario}: ${item.quantidade}`).join(", ")}`}
                           </span>;
@@ -1518,6 +1501,20 @@ export default function FeirasPage() {
                       </span>
                     )}
 
+                    {podePlanejar && padraoDaFeira(feira, planejamentos[chave] ?? []) && (
+                      <Button type="button" variant="primary"
+                        disabled={salvandoPadrao !== null || Boolean(registroRetorno)}
+                        onClick={() => void planejarPadrao(feira, chave)}>
+                        {salvandoPadrao === chave ? "Salvando padrão..." : (Object.keys(COMPLEMENTOS_FEIRAS).includes(nomeNormalizado(feira.nome)) ? "Aplicar padrão de Palmito/Marguerita" : "Planejar padrão da feira")}
+                      </Button>
+                    )}
+                    {podePlanejar && feedbackPadrao?.chave === chave && (
+                      <p role={feedbackPadrao.erro ? "alert" : "status"}
+                        style={{ color: feedbackPadrao.erro ? "var(--color-danger, #b42318)" : "var(--color-success, #158a4b)" }}>
+                        {feedbackPadrao.texto}
+                      </p>
+                    )}
+
                     {podePlanejar && <Button
                       type="button"
                       variant="secondary"
@@ -1536,7 +1533,7 @@ export default function FeirasPage() {
                         : "Planejar pastéis"}
                     </Button>}
 
-                    {podePlanejar && aberta && (
+                    {podePlanejar && aberta && salvandoPadrao === null && (
                       <div id={`planejamento-${feira.id}`} style={{ width: "100%" }}>
                         <PlanejadorSabores
                           key={chave}
@@ -1606,7 +1603,7 @@ export default function FeirasPage() {
                         <strong>Bandejas separadas pela Produção</strong>
                         <small>Conferidas por {registroSaida.conferidoPor} em {new Date(registroSaida.conferidoEm).toLocaleString("pt-BR")}</small>
                         {registroSaida.itens.map((item) => (
-                          <span key={item.saborId}>{nomeSabor(item.nome)}: {item.separado} pastéis</span>
+                          <span key={item.saborId}>{item.nome}: {item.separado} pastéis</span>
                         ))}
                       </div>
                     )}
@@ -1634,11 +1631,6 @@ export default function FeirasPage() {
                           onConfirmar={(itens) => confirmarRetorno(chave, itens, registroRetorno?.registradoEm)}
                         />
                       </div>
-                    )}
-                    {podePlanejar && registroRetorno && registroRetorno.itens.some((item) => item.sobraram > 0) && (
-                      erroDescartes ? <p role="alert">{erroDescartes}</p> :
-                      <DescarteFeira chave={chave} retorno={registroRetorno} usos={reaproveitamentos}
-                        descartes={descartes} onSaved={async () => setDescartes(await consultarDescartesFeira())} />
                     )}
                   </article>
                 );

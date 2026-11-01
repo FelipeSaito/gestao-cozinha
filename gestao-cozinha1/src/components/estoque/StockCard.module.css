@@ -1,0 +1,64 @@
+.card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+  box-shadow: var(--shadow-small);
+}
+
+.iconBox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: var(--radius-medium);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.label {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.primary {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.success {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+.warning {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+.danger {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+.info {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}

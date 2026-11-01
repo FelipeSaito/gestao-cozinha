@@ -1,0 +1,71 @@
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-medium);
+}
+
+.icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.message {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.title + .message {
+  margin-top: 2px;
+}
+
+.close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.close:hover {
+  opacity: 1;
+}
+
+.success {
+  background: var(--color-success-light);
+  border-color: color-mix(in srgb, var(--color-success) 25%, transparent);
+  color: var(--color-success);
+}
+.warning {
+  background: var(--color-warning-light);
+  border-color: color-mix(in srgb, var(--color-warning) 25%, transparent);
+  color: var(--color-warning);
+}
+.danger {
+  background: var(--color-danger-light);
+  border-color: color-mix(in srgb, var(--color-danger) 25%, transparent);
+  color: var(--color-danger);
+}
+.info {
+  background: var(--color-info-light);
+  border-color: color-mix(in srgb, var(--color-info) 25%, transparent);
+  color: var(--color-info);
+}

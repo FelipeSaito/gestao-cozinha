@@ -1,0 +1,142 @@
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e5eaf2;
+}
+
+.backButton {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid #dce5f3;
+  border-radius: 10px;
+  background: #f0f4fc;
+  color: #24436e;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.backButton:hover {
+  border-color: #b9cbea;
+  background: #e4edfc;
+}
+
+.backButton:focus-visible {
+  outline: 3px solid #99b9ef;
+  outline-offset: 3px;
+}
+
+.detailCode {
+  margin-left: auto;
+  padding: 8px 12px;
+  border: 1px solid #e0e7f2;
+  border-radius: 9px;
+  background: #f8faff;
+  color: #17243a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.infoGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0;
+  background: transparent;
+}
+
+.infoItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid #e1e8f4;
+  border-radius: 12px;
+  background: #f5f8ff;
+}
+
+.infoLabel {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #6a7b94;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.infoLabel svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #587bb1;
+}
+
+.infoValue {
+  display: block;
+  color: #203652;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.itemsHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 0;
+  padding: 10px 0;
+  color: #17243a;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.itemsHeader svg {
+  flex-shrink: 0;
+  color: #416ba8;
+}
+
+@media (max-width: 1100px) {
+  .infoGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .detailHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .detailCode {
+    margin-left: 0;
+    text-align: center;
+  }
+
+  .infoItem {
+    padding: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backButton {
+    transition: none;
+  }
+}
