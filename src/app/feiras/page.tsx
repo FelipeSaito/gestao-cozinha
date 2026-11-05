@@ -54,7 +54,11 @@ import {
 } from "@/services/useFeirasCadastradas";
 import type { FeiraCadastrada } from "@/services/feirasCadastradas";
 
-import { padraoDaFeira, temPadraoCompleto } from "@/lib/planejamento-padrao-feiras";
+import {
+  padraoDaFeira,
+  temPadraoCompleto,
+  SABORES_CEREJEIRAS,
+} from "@/lib/planejamento-padrao-feiras";
 
 import styles from "./page.module.css";
 
