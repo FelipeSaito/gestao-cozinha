@@ -19,7 +19,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import {
   escutarPlanejamentos,
   type Planejamentos,
-  type SaborPlanejado,
 } from "@/services/planejamentosFirestore";
 
 import {
@@ -32,114 +31,11 @@ import {
   nomeSabor,
 } from "@/lib/nomesSabores";
 
+import { padraoDaFeira } from "@/lib/planejamento-padrao-feiras";
+
 import styles from "./page.module.css";
 
-/*
- * Referência informada para a produção
- * normal de Cerejeiras.
- *
- * A previsão do Dono é lida
- * separadamente do Firestore.
- */
-const PADRAO_CEREJEIRAS:
-  SaborPlanejado[] = [
-  {
-    id: "padrao-carne",
-    nome: "carne",
-    quantidade: 35,
-  },
-  {
-    id: "padrao-queijo",
-    nome: "queijo",
-    quantidade: 55,
-  },
-  {
-    id: "padrao-pizza",
-    nome: "pizza",
-    quantidade: 30,
-  },
-  {
-    id: "padrao-fc",
-    nome: "fc",
-    quantidade: 30,
-  },
-  {
-    id: "padrao-fq",
-    nome: "fq",
-    quantidade: 2,
-  },
-  {
-    id: "padrao-calabresa",
-    nome: "calabresa",
-    quantidade: 20,
-  },
-  {
-    id: "padrao-cq",
-    nome: "c/q",
-    quantidade: 25,
-  },
-  {
-    id: "padrao-ovo",
-    nome: "ovo",
-    quantidade: 8,
-  },
-  {
-    id: "padrao-cchded",
-    nome: "c.chded",
-    quantidade: 3,
-  },
-  {
-    id: "padrao-bauru",
-    nome: "bauru",
-    quantidade: 15,
-  },
-  {
-    id: "padrao-seca",
-    nome: "seca",
-    quantidade: 8,
-  },
-  {
-    id: "padrao-poro",
-    nome: "poro",
-    quantidade: 8,
-  },
-  {
-    id: "padrao-escarola",
-    nome: "escarola",
-    quantidade: 7,
-  },
-  {
-    id: "padrao-pernil",
-    nome: "pernil",
-    quantidade: 7,
-  },
-  {
-    id: "padrao-costela",
-    nome: "costela",
-    quantidade: 10,
-  },
-  {
-    id: "padrao-4-queijos",
-    nome: "4 queijos",
-    quantidade: 4,
-  },
-  {
-    id: "padrao-chcolate",
-    nome: "chcolate",
-    quantidade: 2,
-  },
-  {
-    id: "padrao-doce",
-    nome: "doce",
-    quantidade: 2,
-  },
-  {
-    id: "padrao-especial",
-    nome: "especial",
-    quantidade: 12,
-  },
-];
-
+/* Padrões compartilhados entre o planejamento do Dono e a comparação da produção. */
 const FEIRAS:
   Record<string, string> = {
   "jardim-independencia":
@@ -205,15 +101,6 @@ function normalizar(
   nome: string,
 ) {
   return chaveSabor(nome);
-}
-
-function padraoDaFeira(
-  feiraId: string,
-): SaborPlanejado[] {
-  return feiraId ===
-    "cerejeira"
-    ? PADRAO_CEREJEIRAS
-    : [];
 }
 
 export default function ProducaoPasteisPage() {
@@ -440,13 +327,10 @@ export default function ProducaoPasteisPage() {
       ],
     );
 
-  const padrao = useMemo(
-    () =>
-      padraoDaFeira(
-        feiraSelecionada,
-      ),
-    [feiraSelecionada],
-  );
+  const padrao = useMemo(() => padraoDaFeira({
+    id: feiraSelecionada,
+    nome: feirasDoDia.find(feira => feira.id === feiraSelecionada)?.nome ?? feiraSelecionada,
+  }, [], data) ?? [], [feiraSelecionada, feirasDoDia, data]);
 
   const temPadrao =
     padrao.length > 0;

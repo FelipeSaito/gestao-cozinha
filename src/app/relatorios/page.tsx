@@ -10,6 +10,11 @@ import {
 import {
   Download,
   Filter,
+  BarChart3,
+  CalendarDays,
+  ClipboardList,
+  ChefHat,
+  PackageCheck,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -213,6 +218,233 @@ function diasAtras(
 }
 
 const csvCampo = campoCsv;
+
+type SerieGrafico = { chave: string; nome: string; cor: string };
+type PontoGrafico = { id: string; nome: string; valores: Record<string, number | null> };
+const SERIES_OPERACAO: SerieGrafico[] = [
+  { chave: "planejados", nome: "Planejados", cor: "#244567" },
+  { chave: "produzidos", nome: "Produzidos", cor: "#16806a" },
+  { chave: "separados", nome: "Separados", cor: "#798bd3" },
+];
+const SERIES_FEIRAS: SerieGrafico[] = [
+  { chave: "separados", nome: "Separados", cor: "#244567" },
+  { chave: "sobras", nome: "Sobras", cor: "#c48122" },
+];
+const numeroGrafico = (valor: number) => valor.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+const dataCurta = (iso: string) => iso.slice(5).split("-").reverse().join("/");
+
+function agruparOperacao(
+  linhas: Linha[], planos: Planejamentos, saidas: Saidas, retornos: Retornos,
+  producoes: ProducoesFeira, inicio: string, fim: string,
+) {
+  const dias = Math.floor((Date.parse(`${fim}T12:00:00Z`) - Date.parse(`${inicio}T12:00:00Z`)) / 86400000) + 1;
+  const agrupamento = dias <= 16 ? "dia" : dias <= 112 ? "semana" : "mês";
+  const periodos = new Map<string, PontoGrafico>();
+  const feiras = new Map<string, PontoGrafico>();
+  const sabores = new Map<string, PontoGrafico>();
+  function somar(ponto: PontoGrafico, chave: string, valor: number | null) {
+    if (valor !== null) ponto.valores[chave] = (ponto.valores[chave] ?? 0) + valor;
+  }
+  for (const linha of linhas) {
+    let chave = linha.data;
+    if (agrupamento === "semana") {
+      const distancia = Math.floor((Date.parse(`${linha.data}T12:00:00Z`) - Date.parse(`${inicio}T12:00:00Z`)) / 86400000);
+      const data = new Date(`${inicio}T12:00:00Z`);
+      data.setUTCDate(data.getUTCDate() + Math.floor(distancia / 7) * 7);
+      chave = data.toISOString().slice(0, 10);
+    } else if (agrupamento === "mês") chave = linha.data.slice(0, 7);
+    const nome = agrupamento === "mês" ? `${chave.slice(5)}/${chave.slice(2, 4)}` : dataCurta(chave);
+    const periodo = periodos.get(chave) ?? { id: chave, nome, valores: { planejados: 0, produzidos: 0, separados: null } };
+    const feira = feiras.get(linha.feiraId) ?? { id: linha.feiraId, nome: linha.feira, valores: { separados: null, sobras: null } };
+    somar(periodo, "planejados", linha.planejados);
+    somar(periodo, "produzidos", (producoes[linha.chave] ?? []).reduce((total, item) => total + item.quantidade, 0));
+    somar(periodo, "separados", linha.separados);
+    somar(feira, "separados", linha.separados);
+    somar(feira, "sobras", linha.sobras);
+    periodos.set(chave, periodo);
+    feiras.set(linha.feiraId, feira);
+    for (const sabor of saboresDaFeira(linha.chave, planos, saidas, retornos)) {
+      const ponto = sabores.get(sabor.id) ?? { id: sabor.id, nome: sabor.nome, valores: { separados: null, sobras: null } };
+      somar(ponto, "separados", sabor.separados);
+      somar(ponto, "sobras", sabor.sobras);
+      sabores.set(sabor.id, ponto);
+    }
+  }
+  return {
+    agrupamento,
+    periodos: [...periodos.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    feiras: [...feiras.values()].sort((a, b) => (b.valores.separados ?? 0) - (a.valores.separados ?? 0)),
+    sabores: [...sabores.values()].sort((a, b) => (b.valores.sobras ?? 0) - (a.valores.sobras ?? 0) || (b.valores.separados ?? 0) - (a.valores.separados ?? 0)),
+  };
+}
+
+function custosPorData(consumos: ConsumoRegistrado[]): PontoGrafico[] {
+  const dias = new Map<string, { total: number; completo: boolean }>();
+  const formatador = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" });
+  for (const item of consumos) {
+  if (
+    typeof item.registradoEm !== "string" ||
+    !item.registradoEm.trim()
+  ) continue;
+
+  const data = new Date(item.registradoEm);
+  if (!Number.isFinite(data.getTime())) continue;
+
+  // Continue com o restante do código existente.
+    const partes = formatador.formatToParts(data);
+    const chave = ["year", "month", "day"].map(tipo => partes.find(parte => parte.type === tipo)?.value).join("-");
+    const atual = dias.get(chave) ?? { total: 0, completo: true };
+    const valido = typeof item.custoUnitario === "number" && Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0 &&
+      Number.isFinite(item.quantidade) && item.quantidade >= 0 && Number.isFinite(item.quantidade * item.custoUnitario);
+    if (valido) atual.total += item.quantidade * (item.custoUnitario ?? 0);
+    else atual.completo = false;
+    dias.set(chave, atual);
+  }
+  return [...dias].sort(([a], [b]) => a.localeCompare(b)).map(([id, dado]) => ({
+    id, nome: dataCurta(id), valores: { custo: dado.completo && Number.isFinite(dado.total) ? dado.total : null },
+  }));
+}
+
+function LegendaGrafico({ series }: { series: SerieGrafico[] }) {
+  return <ul className={styles.legend}>{series.map(serie => <li key={serie.chave}>
+    <span style={{ background: serie.cor }} aria-hidden="true" />{serie.nome}
+  </li>)}</ul>;
+}
+
+function DadosDoGrafico({ dados, series, moeda = false }: { dados: PontoGrafico[]; series: SerieGrafico[]; moeda?: boolean }) {
+  return <details className={styles.chartData}>
+    <summary>Consultar valores do gráfico</summary>
+    <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Valores do gráfico">
+      <table className={styles.chartTable}>
+        <thead><tr><th scope="col">Referência</th>{series.map(serie => <th scope="col" key={serie.chave}>{serie.nome}</th>)}</tr></thead>
+        <tbody>{dados.map(dado => <tr key={dado.id}><th scope="row">{dado.nome}</th>{series.map(serie => {
+          const valor = dado.valores[serie.chave];
+          return <td key={serie.chave}>{valor == null ? "Não registrado" : moeda ? formatCurrency(valor) : numeroGrafico(valor)}</td>;
+        })}</tr>)}</tbody>
+      </table>
+    </div>
+  </details>;
+}
+
+function GraficoColunas({ dados, series, titulo }: { dados: PontoGrafico[]; series: SerieGrafico[]; titulo: string }) {
+  const maximo = Math.max(1, ...dados.flatMap(dado => series.map(serie => dado.valores[serie.chave] ?? 0)));
+  const largura = 700, altura = 270, esquerda = 50, topo = 18, base = 224;
+  const passo = (largura - esquerda - 18) / Math.max(1, dados.length);
+  const barra = Math.min(18, passo * 0.72 / Math.max(1, series.length));
+  return <>
+    <LegendaGrafico series={series} />
+    {!dados.length ? <div className={styles.emptyChart}>Nenhum registro de feira no período selecionado.</div> : <>
+      <svg className={styles.chartSvg} viewBox={`0 0 ${largura} ${altura}`} role="img" aria-label={titulo}>
+        {[0, 0.25, 0.5, 0.75, 1].map(fracao => {
+          const y = base - fracao * (base - topo);
+          return <g key={fracao}><line x1={esquerda} x2={largura - 18} y1={y} y2={y} className={styles.gridLine} />
+            <text x={esquerda - 9} y={y + 4} textAnchor="end" className={styles.axisText}>{numeroGrafico(maximo * fracao)}</text></g>;
+        })}
+        {dados.map((dado, indice) => {
+          const centro = esquerda + passo * (indice + 0.5);
+          return <g key={dado.id}>
+            {series.map((serie, i) => {
+              const valor = dado.valores[serie.chave];
+              if (valor == null) return null;
+              const h = (valor / maximo) * (base - topo);
+              return <rect key={serie.chave} x={centro - series.length * barra / 2 + i * barra} y={base - h} width={Math.max(1, barra - 2)} height={h}
+                rx={3} fill={serie.cor} tabIndex={0} aria-label={`${dado.nome}, ${serie.nome}: ${numeroGrafico(valor)}`}>
+                <title>{`${dado.nome} · ${serie.nome}: ${numeroGrafico(valor)}`}</title>
+              </rect>;
+            })}
+            {(indice % Math.max(1, Math.ceil(dados.length / 7)) === 0 || indice === dados.length - 1) &&
+              <text x={centro} y={248} textAnchor="middle" className={styles.axisText}>{dado.nome}</text>}
+          </g>;
+        })}
+      </svg>
+      <DadosDoGrafico dados={dados} series={series} />
+    </>}
+  </>;
+}
+
+function GraficoBarras({ dados, series, onSelecionar, selecionado, vazio }: {
+  dados: PontoGrafico[]; series: SerieGrafico[]; onSelecionar?: (id: string) => void; selecionado?: string; vazio: string;
+}) {
+  const maximo = Math.max(1, ...dados.flatMap(dado => series.map(serie => dado.valores[serie.chave] ?? 0)));
+  return <>
+    <LegendaGrafico series={series} />
+    {!dados.length ? <div className={styles.emptyChart}>{vazio}</div> : <div className={styles.horizontalChart}>
+      {dados.map(dado => <div key={dado.id} className={styles.barRow}>
+        {onSelecionar ? <button className={styles.fairButton} type="button" aria-pressed={selecionado === dado.id}
+          onClick={() => onSelecionar(dado.id)}>{dado.nome}<span aria-hidden="true">↗</span></button> : <strong>{dado.nome}</strong>}
+        {series.map(serie => {
+          const valor = dado.valores[serie.chave];
+          return <div className={styles.barLine} key={serie.chave}>
+            <div className={styles.barTrack} aria-hidden="true"><div style={{ width: `${100 * (valor ?? 0) / maximo}%`, background: serie.cor }} /></div>
+            <span aria-label={`${serie.nome}: ${valor == null ? "não registrado" : numeroGrafico(valor)}`} title={serie.nome}>{valor == null ? "—" : numeroGrafico(valor)}</span>
+          </div>;
+        })}
+      </div>)}
+    </div>}
+    {dados.length > 0 && <DadosDoGrafico dados={dados} series={series} />}
+  </>;
+}
+
+function GraficoSobras({ sobras, separados, fechadas }: { sobras: number; separados: number; fechadas: number }) {
+  const valido = separados > 0 && sobras >= 0 && sobras <= separados;
+  const percentual = valido ? sobras / separados * 100 : 0;
+  const raio = 72, comprimento = 2 * Math.PI * raio;
+  return <>
+    {!valido ? <div className={styles.emptyChart}>{sobras > separados ? "As sobras superam as saídas. Confira os registros de fechamento." : "Aguardando feiras com saída e fechamento registrados."}</div> : <div className={styles.donutLayout}>
+      <div className={styles.donutWrap}>
+        <svg viewBox="0 0 180 180" role="img" aria-label={`Taxa de sobras: ${percentual.toFixed(1)} por cento`}>
+          <circle cx="90" cy="90" r={raio} fill="none" stroke="var(--color-border, #e3e9f0)" strokeWidth="15" />
+          <circle cx="90" cy="90" r={raio} fill="none" stroke="#c48122" strokeWidth="15" strokeLinecap={percentual === 0 ? "butt" : "round"}
+            strokeDasharray={`${comprimento * percentual / 100} ${comprimento}`} transform="rotate(-90 90 90)" />
+        </svg>
+        <div className={styles.donutValue}><strong>{percentual.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</strong><span>de sobras</span></div>
+      </div>
+      <dl className={styles.donutStats}>
+        <div><dt>Sobras registradas</dt><dd>{numeroGrafico(sobras)}</dd></div>
+        <div><dt>Saídas dessas feiras</dt><dd>{numeroGrafico(separados)}</dd></div>
+        <div><dt>Feiras com fechamento</dt><dd>{fechadas}</dd></div>
+      </dl>
+    </div>}
+    <p className={styles.note}>Considera apenas feiras com saída e fechamento. Sobras registradas não representam o saldo disponível na geladeira.</p>
+  </>;
+}
+
+function GraficoCustos({ dados }: { dados: PontoGrafico[] }) {
+  const serie = [{ chave: "custo", nome: "Insumos consumidos", cor: "#16806a" }];
+  const validos = dados.filter(dado => dado.valores.custo !== null);
+  const maximo = Math.max(1, ...validos.map(dado => dado.valores.custo ?? 0));
+  const x = (i: number) => dados.length === 1 ? 350 : 65 + i * 610 / Math.max(1, dados.length - 1);
+  const y = (valor: number) => 210 - valor / maximo * 185;
+  // Cada lacuna reinicia o traço; ausência de custo não vira zero.
+  let aberto = false;
+  const caminho = dados.map((dado, indice) => {
+    const valor = dado.valores.custo;
+    if (valor == null) { aberto = false; return ""; }
+    const comando = aberto ? "L" : "M";
+    aberto = true;
+    return `${comando} ${x(indice)} ${y(valor)}`;
+  }).join(" ");
+  return <>
+    {!dados.length ? <div className={styles.emptyChart}>Nenhum consumo registrado neste período.</div> : <>
+      <svg className={styles.chartSvg} viewBox="0 0 700 255" role="img" aria-label="Custo diário dos insumos consumidos, em reais">
+        {[0, 0.5, 1].map(fracao => <g key={fracao}>
+          <line x1={65} x2={680} y1={y(maximo * fracao)} y2={y(maximo * fracao)} className={styles.gridLine} />
+          <text x={56} y={y(maximo * fracao) + 4} textAnchor="end" className={styles.axisText}>{numeroGrafico(maximo * fracao)}</text>
+        </g>)}
+        <path d={caminho} fill="none" stroke="#16806a" strokeWidth={3} strokeLinejoin="round" />
+        {dados.map((dado, i) => <g key={dado.id}>
+          {dado.valores.custo != null && <circle cx={x(i)} cy={y(dado.valores.custo)} r={5} fill="#16806a" stroke="white" strokeWidth={2}
+            tabIndex={0} aria-label={`${dado.nome}: ${formatCurrency(dado.valores.custo)}`}><title>{`${dado.nome}: ${formatCurrency(dado.valores.custo)}`}</title></circle>}
+          {(i % Math.max(1, Math.ceil(dados.length / 6)) === 0 || i === dados.length - 1) &&
+            <text x={x(i)} y={239} textAnchor="middle" className={styles.axisText}>{dado.nome}</text>}
+        </g>)}
+      </svg>
+      {!validos.length && <p className={styles.note}>Os consumos não têm custo histórico completo para desenhar o gráfico.</p>}
+      <DadosDoGrafico dados={dados} series={serie} moeda />
+    </>}
+  </>;
+}
+
 
 function RelatoriosConteudo() {
   const { usuario } = useAuth();
@@ -968,6 +1200,20 @@ function RelatoriosConteudo() {
     !erro &&
     !periodoInvalido;
 
+  const producaoDisponivel = !carregandoProducao && !erroProducao;
+  const custosDisponiveis = consumosAtuais && !carregandoCustos && !erroCustos;
+  const descartesDisponiveis = complementoAtual && !carregandoDescartes && !erroDescartes;
+  const dadosDashboard = useMemo(() => agruparOperacao(
+    linhas, planos, saidas, retornos, producoes, inicio, fim,
+  ), [linhas, planos, saidas, retornos, producoes, inicio, fim]);
+  const dadosCustos = useMemo(() => custosPorData(consumos), [consumos]);
+
+  function escolherPeriodo(dias: number | "mes") {
+    const hoje = hojeBrasil();
+    setFim(hoje);
+    setInicio(dias === "mes" ? `${hoje.slice(0, 7)}-01` : diasAtras(hoje, dias - 1));
+  }
+
   function baixarCsv(
     nomeArquivo: string,
     cabecalho: Array<
@@ -1248,8 +1494,8 @@ function RelatoriosConteudo() {
 
   return (
     <AppLayout
-      title="Relatórios"
-      subtitle="Acompanhe os registros reais das feiras."
+      title="Dashboard do dono"
+      subtitle="Produção, feiras e custos em uma visão integrada."
       headerActions={
         dono ? (
           <Button
@@ -1277,6 +1523,16 @@ function RelatoriosConteudo() {
           </p>
         ) : (
           <>
+            <section className={styles.dashboardIntro} aria-label="Resumo do painel">
+              <div><span className={styles.eyebrow}>PASTEL SAITO · GESTÃO</span>
+                <h2>Visão da operação</h2>
+                <p>Acompanhe a produção e entenda o resultado de cada feira.</p>
+              </div>
+              <div className={styles.introBadge}><BarChart3 size={19} aria-hidden="true" />
+                <span>{feiraId ? feirasCadastradas.find(item => item.id === feiraId)?.nome ?? feiraId : "Todas as feiras"}</span>
+              </div>
+            </section>
+
             <section
               className={styles.panel}
               aria-labelledby="filtros-feiras"
@@ -1288,14 +1544,11 @@ function RelatoriosConteudo() {
               >
                 <div>
                   <h2 id="filtros-feiras">
-                    Relatório de feiras
+                    Filtros do dashboard
                   </h2>
 
                   <p>
-                    Planejamento, saída
-                    conferida e sobras
-                    registradas por
-                    feira.
+                    Escolha o período e a feira. Custos da cozinha, massa e estoque têm seus próprios escopos indicados nos painéis.
                   </p>
                 </div>
 
@@ -1378,6 +1631,13 @@ function RelatoriosConteudo() {
                 </label>
               </div>
 
+              <div className={styles.quickFilters} aria-label="Períodos rápidos">
+                <button type="button" onClick={() => escolherPeriodo(7)}>Últimos 7 dias</button>
+                <button type="button" onClick={() => escolherPeriodo(30)}>Últimos 30 dias</button>
+                <button type="button" onClick={() => escolherPeriodo("mes")}>Este mês</button>
+                <span>{inicio && fim ? `${inicio.split("-").reverse().join("/")} a ${fim.split("-").reverse().join("/")}` : "Selecione as datas"}</span>
+              </div>
+
               {periodoInvalido && (
                 <p
                   role="alert"
@@ -1391,6 +1651,105 @@ function RelatoriosConteudo() {
               )}
             </section>
 
+            {!podeMostrar ? (
+              <div className={styles.dashboardNotice} role={erro || periodoInvalido ? "alert" : "status"}>
+                {periodoInvalido ? "Selecione um período válido para consultar os gráficos." : erro || "Carregando os registros para montar seu dashboard…"}
+              </div>
+            ) : (
+              <>
+                <section className={styles.kpiGrid} aria-label="Resumo do período">
+                  <article className={styles.kpiCard}><span className={styles.kpiIcon}><CalendarDays size={20} aria-hidden="true" /></span>
+                    <span className={styles.kpiLabel}>Feiras com registros</span><strong>{numeroGrafico(linhas.length)}</strong>
+                    <small>{feirasFechadas.length} com saída e fechamento</small></article>
+                  <article className={styles.kpiCard}><span className={styles.kpiIcon}><ClipboardList size={20} aria-hidden="true" /></span>
+                    <span className={styles.kpiLabel}>Pastéis planejados</span><strong>{numeroGrafico(totais.planejados)}</strong>
+                    <small>Quantidade prevista para as feiras</small></article>
+                  <article className={styles.kpiCard}><span className={`${styles.kpiIcon} ${styles.greenIcon}`}><ChefHat size={20} aria-hidden="true" /></span>
+                    <span className={styles.kpiLabel}>Produção registrada</span><strong>{producaoDisponivel ? numeroGrafico(producaoRegistrada) : "—"}</strong>
+                    <small>{erroProducao ? "Falha ao consultar produção" : carregandoProducao ? "Carregando produção…" : "Acumulado por feira e funcionário"}</small></article>
+                  <article className={styles.kpiCard}><span className={`${styles.kpiIcon} ${styles.amberIcon}`}><PackageCheck size={20} aria-hidden="true" /></span>
+                    <span className={styles.kpiLabel}>Saídas conferidas</span><strong>{numeroGrafico(totais.separados)}</strong>
+                    <small>{linhas.filter(linha => linha.separados !== null).length} saídas registradas</small></article>
+                </section>
+
+                <section className={styles.secondaryKpis} aria-label="Sobras, perdas e custos">
+                  <div><span>Sobras registradas</span><strong>{numeroGrafico(totais.sobras)} <small>pastéis</small></strong><p>Retornos das feiras no período</p></div>
+                  <div><span>Descartes confirmados</span><strong>{descartesDisponiveis ? numeroGrafico(perdasConfirmadas) : "—"} <small>pastéis</small></strong><p>Pela data do descarte registrado</p></div>
+                  <div><span>Custo dos insumos · cozinha inteira</span><strong>{custosDisponiveis && consumos.length > 0 && consumosSemCusto === 0 ? formatCurrency(custoInsumos) : "—"}</strong>
+                    <p>{!custosDisponiveis ? "Aguardando consulta dos custos" : consumosSemCusto > 0 ? `${consumosSemCusto} consumo(s) sem custo histórico` : !consumos.length ? "Nenhum consumo registrado" : "Insumos consumidos; sem mão de obra"}</p></div>
+                </section>
+
+                {(erroProducao || erroCustos || erroDescartes) && <div role="alert" className={styles.dashboardNotice}>
+                  {[erroProducao, erroCustos, erroDescartes].filter(Boolean).join(" ")}
+                </div>}
+                {linhas.length === 0 && <div className={styles.dashboardNotice}>
+                  Não há registros de feiras neste período. Os gráficos serão preenchidos conforme os planejamentos e movimentos forem salvos.
+                </div>}
+
+                <div className={styles.chartGrid}>
+                  <section className={`${styles.chartCard} ${styles.chartWide}`} aria-labelledby="grafico-evolucao">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>VOLUME DE PASTÉIS</span><h2 id="grafico-evolucao">Planejamento e produção</h2>
+                      <p>Agrupado por {dadosDashboard.agrupamento}, pela data da feira.</p></div><span className={styles.chartPill}>Unidades</span></div>
+                    <GraficoColunas dados={dadosDashboard.periodos} series={producaoDisponivel ? SERIES_OPERACAO : SERIES_OPERACAO.filter(serie => serie.chave !== "produzidos")}
+                      titulo="Planejamento, produção registrada e saídas conferidas por data da feira" />
+                    {!producaoDisponivel && <p className={styles.note}>A série de produção está indisponível até a consulta ser concluída.</p>}
+                    <p className={styles.note}>Datas sem registros são omitidas. A produção é o acumulado destinado à feira, não a data em que cada pastel foi feito.</p>
+                  </section>
+
+                  <section className={styles.chartCard} aria-labelledby="grafico-sobras">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>RETORNO DAS FEIRAS</span><h2 id="grafico-sobras">Taxa de sobras</h2>
+                      <p>Retorno em relação às saídas das feiras fechadas.</p></div></div>
+                    <GraficoSobras sobras={sobrasFechadas} separados={taxaSobras} fechadas={feirasFechadas.length} />
+                  </section>
+
+                  <section className={styles.chartCard} aria-labelledby="grafico-feiras">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>COMPARAÇÃO</span><h2 id="grafico-feiras">Resultado por feira</h2>
+                      <p>Selecione o nome para filtrar os dados das feiras.</p></div>
+                      {feiraId && <button className={styles.clearFilter} onClick={() => setFeiraId("")} type="button">Ver todas</button>}</div>
+                    <GraficoBarras dados={dadosDashboard.feiras} series={SERIES_FEIRAS} selecionado={feiraId}
+                      onSelecionar={id => setFeiraId(atual => atual === id ? "" : id)} vazio="Nenhuma feira com registros neste período." />
+                    <p className={styles.note}>“—” significa ausência de registro; zero é uma contagem confirmada. As saídas e sobras podem ter coberturas diferentes.</p>
+                  </section>
+
+                  <section className={styles.chartCard} aria-labelledby="grafico-sabores">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>MIX DE PRODUTOS</span><h2 id="grafico-sabores">Sabores com mais sobras</h2>
+                      <p>Até 8 sabores, ordenados pela quantidade de sobras.</p></div><span className={styles.chartPill}>Top 8</span></div>
+                    <GraficoBarras dados={dadosDashboard.sabores.filter(dado => (dado.valores.sobras ?? 0) > 0).slice(0, 8)} series={SERIES_FEIRAS}
+                      vazio="Nenhuma sobra positiva registrada nos filtros selecionados." />
+                    <p className={styles.note}>Compara quantidades absolutas, não taxa de sobra ou vendas. Consulte os demais sabores nas tabelas detalhadas.</p>
+                  </section>
+
+                  <section className={`${styles.chartCard} ${styles.chartWide}`} aria-labelledby="grafico-custos">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>CUSTOS DA COZINHA</span><h2 id="grafico-custos">Consumo de insumos</h2>
+                      <p>Custo diário registrado, em reais. Datas de São Paulo.</p></div><span className={styles.chartPill}>Cozinha inteira</span></div>
+                    {erroCustos ? <p role="alert" className={styles.error}>{erroCustos}</p> : !custosDisponiveis ?
+                      <div role="status" className={styles.emptyChart}>Carregando custos do período…</div> : <GraficoCustos dados={dadosCustos} />}
+                    <p className={styles.note}>Este gráfico usa o período e não é filtrado por feira. Não inclui mão de obra, frete ou outras despesas. Datas sem consumo são omitidas; custos incompletos aparecem como lacunas.</p>
+                  </section>
+
+                  <section className={styles.chartCard} aria-labelledby="resumo-massa-visual">
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>PRODUÇÃO PRÓPRIA</span><h2 id="resumo-massa-visual">Massa no período</h2>
+                      <p>Ordens por data de produção. Não usa o filtro de feira.</p></div></div>
+                    {erroOrdens ? <p role="alert" className={styles.error}>{erroOrdens}</p> : !complementoAtual || carregandoOrdens ?
+                      <div role="status" className={styles.emptyChart}>Carregando ordens…</div> : <>
+                        <div className={styles.massVisual}><strong>{numeroGrafico(ordensMassaConcluidas.length)}<span>ordens concluídas de {ordensMassa.length}</span></strong>
+                          <div className={styles.massProgress} role="progressbar" aria-label="Ordens de massa concluídas" aria-valuemin={0} aria-valuemax={100}
+                            aria-valuenow={ordensMassa.length ? Math.round(ordensMassaConcluidas.length / ordensMassa.length * 100) : 0}>
+                            <span style={{ width: `${ordensMassa.length ? ordensMassaConcluidas.length / ordensMassa.length * 100 : 0}%` }} /></div>
+                        </div>
+                        <dl className={styles.massVisualStats}><div><dt>Blocos produzidos</dt><dd>{numeroGrafico(totalBlocos)}</dd></div>
+                          <div><dt>Sacos armazenados</dt><dd>{numeroGrafico(totalSacosMassa)}</dd></div>
+                          <div><dt>Rolos armazenados</dt><dd>{numeroGrafico(totalRolosMassa)}</dd></div></dl>
+                        <p className={styles.note}>Totais das ordens concluídas. Estes números não representam o saldo atual dos freezers.</p>
+                      </>}
+                  </section>
+                </div>
+              </>
+            )}
+
+            <details className={styles.reportDetails}>
+              <summary><span>Consultar tabelas e exportações</span><small>Feiras, sabores, massa e estoque atual</small></summary>
+              <div className={styles.detailPanels}>
             <section className={styles.panel} aria-label="Exportações detalhadas">
               <h2>Dados para análise</h2>
               <p>CSV em UTF-8, separado por ponto e vírgula, com ponto decimal. Datas e horas identificadas como UTC devem ser convertidas para São Paulo na análise.</p>
@@ -2631,6 +2990,8 @@ function RelatoriosConteudo() {
                   </>
                 )}
             </section>
+              </div>
+            </details>
           </>
         )}
       </div>

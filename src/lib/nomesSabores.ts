@@ -1,5 +1,8 @@
 /** Nome exibido para sabores antigos e novos. Não altera o ID nem gravações existentes. */
 const NOMES: Record<string, string> = {
+  "palmito": "Palmito",
+  "marguerita": "Marguerita",
+  "margherita": "Marguerita",
   "fc": "Frango Catupiry",
   "frango catupiry": "Frango Catupiry",
   "fq": "Frango com Queijo",

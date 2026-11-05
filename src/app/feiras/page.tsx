@@ -54,6 +54,8 @@ import {
 } from "@/services/useFeirasCadastradas";
 import type { FeiraCadastrada } from "@/services/feirasCadastradas";
 
+import { padraoDaFeira, temPadraoCompleto } from "@/lib/planejamento-padrao-feiras";
+
 import styles from "./page.module.css";
 
 interface FeiraProgramada {
@@ -85,80 +87,6 @@ function feirasDaData(dataIso: string, extras: FeiraCadastrada[]): FeiraPrograma
 
 function nomeDaFeira(feiraId: string, extras: FeiraCadastrada[]) {
   return extras.find((feira) => feira.id === feiraId)?.nome ?? feiraId;
-}
-
-const SABORES_CEREJEIRAS: SaborPlanejado[] = [
-  { id: "padrao-carne", nome: "carne", quantidade: 35 },
-  { id: "padrao-queijo", nome: "queijo", quantidade: 55 },
-  { id: "padrao-pizza", nome: "pizza", quantidade: 30 },
-  { id: "padrao-fc", nome: "fc", quantidade: 30 },
-  { id: "padrao-fq", nome: "fq", quantidade: 2 },
-  { id: "padrao-calabresa", nome: "calabresa", quantidade: 20 },
-  { id: "padrao-cq", nome: "c/q", quantidade: 25 },
-  { id: "padrao-ovo", nome: "ovo", quantidade: 8 },
-  { id: "padrao-cchded", nome: "c.chded", quantidade: 3 },
-  { id: "padrao-bauru", nome: "bauru", quantidade: 15 },
-  { id: "padrao-seca", nome: "seca", quantidade: 8 },
-  { id: "padrao-poro", nome: "poro", quantidade: 8 },
-  { id: "padrao-escarola", nome: "escarola", quantidade: 7 },
-  { id: "padrao-pernil", nome: "pernil", quantidade: 7 },
-  { id: "padrao-costela", nome: "costela", quantidade: 10 },
-  { id: "padrao-4-queijos", nome: "4 queijos", quantidade: 4 },
-  { id: "padrao-chcolate", nome: "chcolate", quantidade: 2 },
-  { id: "padrao-doce", nome: "doce", quantidade: 2 },
-  { id: "padrao-especial", nome: "especial", quantidade: 12 },
-  { id: "padrao-palmito", nome: "palmito", quantidade: 10 },
-  { id: "padrao-marguerita", nome: "marguerita", quantidade: 4 },
-];
-
-// Mantém os mesmos identificadores e nomes usados pelo catálogo existente.
-const SABORES_LARANJEIRA: SaborPlanejado[] = [
-  ["padrao-carne", 40], ["padrao-queijo", 40], ["padrao-pizza", 40],
-  ["padrao-fc", 40], ["padrao-calabresa", 20], ["padrao-cq", 30],
-  ["padrao-ovo", 8], ["padrao-cchded", 8], ["padrao-bauru", 15],
-  ["padrao-seca", 12], ["padrao-poro", 10], ["padrao-escarola", 4],
-  ["padrao-pernil", 5], ["padrao-costela", 12], ["padrao-especial", 12],
-  ["padrao-palmito", 8], ["padrao-marguerita", 4],
-].map(([id, quantidade]) => {
-  const sabor = SABORES_CEREJEIRAS.find((item) => item.id === id)!;
-  return { ...sabor, quantidade: Number(quantidade) };
-});
-
-// null: sem quantidade fixa; mantém o que já foi planejado manualmente.
-const COMPLEMENTOS_FEIRAS: Record<string, { palmito: number; marguerita: number | null }> = {
-  "parque da serra": { palmito: 4, marguerita: 3 },
-  castanheira: { palmito: 8, marguerita: 4 },
-  bela: { palmito: 0, marguerita: 0 },
-  cenarios: { palmito: 4, marguerita: null },
-  macedonia: { palmito: 3, marguerita: null },
-  "santa clara": { palmito: 2, marguerita: null },
-  embu: { palmito: 3, marguerita: null },
-};
-
-function padraoDaFeira(
-  feira: FeiraProgramada,
-  atuais: SaborPlanejado[] = [],
-): SaborPlanejado[] | undefined {
-  const nomes = [nomeNormalizado(feira.id).replace(/-/g, " "), nomeNormalizado(feira.nome)];
-  if (nomes.some((nome) => ["cerejeira", "cerejeiras"].includes(nome))) {
-    return SABORES_CEREJEIRAS;
-  }
-  if (nomes.some((nome) => ["laranjeira", "laranjeiras"].includes(nome))) {
-    return SABORES_LARANJEIRA;
-  }
-  const complemento = nomes.map((nome) => COMPLEMENTOS_FEIRAS[nome]).find(Boolean);
-  // Não inventar um planejamento completo usando apenas os dois novos sabores.
-  if (!complemento || atuais.length === 0) return undefined;
-  let itens = atuais.map((item) => ({ ...item }));
-  for (const nome of ["palmito", "marguerita"] as const) {
-    const quantidade = complemento[nome];
-    if (quantidade === null) continue;
-    const id = `padrao-${nome}`;
-    const existente = itens.find((item) => item.id === id || nomeNormalizado(item.nome) === nome);
-    itens = itens.filter((item) => item.id !== id && nomeNormalizado(item.nome) !== nome);
-    if (quantidade > 0) itens.push({ id: existente?.id ?? id, nome: existente?.nome ?? nome, quantidade });
-  }
-  return itens;
 }
 
 function ReaproveitamentoFeira({
@@ -995,7 +923,7 @@ export default function FeirasPage() {
         throw new Error("Aguarde a sincronização com o Firestore.");
       }
       if (retornos[chave]) throw new Error("Esta feira já foi fechada.");
-      const padrao = padraoDaFeira(feira, planejamentos[chave] ?? []);
+      const padrao = padraoDaFeira(feira, planejamentos[chave] ?? [], dataSelecionada);
       if (!padrao) throw new Error("Esta feira ainda não tem um planejamento padrão.");
       const atuais = planejamentos[chave] ?? [];
       const itens = padrao.map((sabor) => {
@@ -1501,11 +1429,11 @@ export default function FeirasPage() {
                       </span>
                     )}
 
-                    {podePlanejar && padraoDaFeira(feira, planejamentos[chave] ?? []) && (
+                    {podePlanejar && padraoDaFeira(feira, planejamentos[chave] ?? [], dataSelecionada) && (
                       <Button type="button" variant="primary"
                         disabled={salvandoPadrao !== null || Boolean(registroRetorno)}
                         onClick={() => void planejarPadrao(feira, chave)}>
-                        {salvandoPadrao === chave ? "Salvando padrão..." : (Object.keys(COMPLEMENTOS_FEIRAS).includes(nomeNormalizado(feira.nome)) ? "Aplicar padrão de Palmito/Marguerita" : "Planejar padrão da feira")}
+                        {salvandoPadrao === chave ? "Salvando padrão..." : (!temPadraoCompleto(feira, dataSelecionada) ? "Aplicar padrão de Palmito/Marguerita" : "Planejar padrão da feira")}
                       </Button>
                     )}
                     {podePlanejar && feedbackPadrao?.chave === chave && (
