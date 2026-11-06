@@ -6,6 +6,7 @@ import {
   serverTimestamp, waitForPendingWrites, type Unsubscribe,
 } from "firebase/firestore";
 import { firebaseClient } from "@/lib/firebase";
+import { faturamentoValido } from "@/lib/faturamento-feira";
 import type { ItemSaida } from "@/services/saidasFirestore";
 
 export interface ItemRetorno {
@@ -21,6 +22,8 @@ export interface RegistroRetorno {
   registradoEm: string;
   registradoPor: string;
   reaproveitado?: boolean;
+  /** Ausente nos registros antigos ou quando o valor não foi informado. */
+  faturamentoCentavos?: number;
 }
 
 export type Retornos = Record<string, RegistroRetorno>;
@@ -68,6 +71,8 @@ export function escutarFechamentos(
               registradoEm: data.toISOString(),
               registradoPor: dados.registradoPor,
               reaproveitado: dados.reaproveitado === true,
+              ...(faturamentoValido(dados.faturamentoCentavos)
+                ? { faturamentoCentavos: dados.faturamentoCentavos } : {}),
             };
           }
         });
@@ -77,10 +82,19 @@ export function escutarFechamentos(
   return () => { pararAuth(); pararDados?.(); };
 }
 
-async function registrar(chave: string, itens: ItemRetorno[], original?: RegistroRetorno, versao?: string) {
+async function registrar(
+  chave: string, itens: ItemRetorno[], original?: RegistroRetorno,
+  versao?: string, faturamentoCentavos?: number | null,
+) {
   if (!CHAVE.test(chave) || itens.length === 0 || itens.length > 40 ||
     !itens.every(itemValido) || new Set(itens.map((i) => i.saborId)).size !== itens.length) {
     throw new Error("Confira os sabores e as sobras antes de confirmar.");
+  }
+  if (faturamentoCentavos != null && !faturamentoValido(faturamentoCentavos)) {
+    throw new Error("Faturamento inválido. Informe um valor em centavos inteiros, positivo ou zero.");
+  }
+  if (original?.faturamentoCentavos !== undefined && !faturamentoValido(original.faturamentoCentavos)) {
+    throw new Error("O registro antigo tem um faturamento inválido. Revise antes de importar.");
   }
   const { auth, db } = firebaseClient();
   const usuario = auth.currentUser;
@@ -111,6 +125,11 @@ async function registrar(chave: string, itens: ItemRetorno[], original?: Registr
         s.saborId === item.saborId && s.nome === item.nome && s.separado === item.separados))) {
       throw new Error("A saída foi alterada. Reabra a contagem e confira os valores.");
     }
+    // Chamadas antigas sem o quarto argumento preservam o faturamento remoto.
+    // null significa explicitamente não informado; zero continua sendo um valor válido.
+    const valor = faturamentoCentavos === undefined
+      ? (original?.faturamentoCentavos ?? fechamento.data()?.faturamentoCentavos)
+      : faturamentoCentavos;
     const registro = {
       data: chave.slice(0, separador),
       feiraId: chave.slice(separador + 1),
@@ -119,6 +138,7 @@ async function registrar(chave: string, itens: ItemRetorno[], original?: Registr
       registradoPor: original?.registradoPor || perfil?.nome || "Funcionário",
       registradoPorId: usuario.uid,
       registradoEm: serverTimestamp(),
+      ...(faturamentoValido(valor) ? { faturamentoCentavos: valor } : {}),
       ...(original ? { dataOriginal: original.registradoEm, importadoPorId: usuario.uid } : {}),
     };
     transacao.set(fechamentoRef, registro);
@@ -128,8 +148,10 @@ async function registrar(chave: string, itens: ItemRetorno[], original?: Registr
   return criado;
 }
 
-export async function salvarFechamentoFirestore(chave: string, itens: ItemRetorno[], versao?: string) {
-  await registrar(chave, itens, undefined, versao);
+export async function salvarFechamentoFirestore(
+  chave: string, itens: ItemRetorno[], versao?: string, faturamentoCentavos?: number | null,
+) {
+  await registrar(chave, itens, undefined, versao, faturamentoCentavos);
 }
 
 export async function importarFechamentoLocal(chave: string, registro: RegistroRetorno) {

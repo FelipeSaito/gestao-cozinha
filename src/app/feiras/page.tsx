@@ -553,9 +553,10 @@ function FechamentoFeira({
   retorno?: RegistroRetorno;
   nomeFeira: string;
   minimoAlocado: Record<string, number>;
-  onConfirmar: (itens: ItemRetorno[]) => Promise<void>;
+  onConfirmar: (itens: ItemRetorno[], versao?: string) => Promise<void>;
 }) {
   const [editando, setEditando] = useState(!retorno);
+  const [versaoEdicao, setVersaoEdicao] = useState(retorno?.registradoEm);
   const [sobras, setSobras] = useState<Record<string, string>>(() =>
     Object.fromEntries(saida.itens.map((item) => [item.saborId, ""])),
   );
@@ -581,7 +582,7 @@ function FechamentoFeira({
     }
     setSalvandoRetorno(true);
     try {
-      await onConfirmar(itens);
+      await onConfirmar(itens, versaoEdicao);
       setErroRetorno("");
       setEditando(false);
     } catch (erro) {
@@ -605,6 +606,8 @@ function FechamentoFeira({
         {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas a outra feira. Peça ao Dono para revisar os registros antes de corrigir.</p>}
         <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
           setSobras(Object.fromEntries(retorno.itens.map((item) => [item.saborId, String(item.sobraram)])));
+          setVersaoEdicao(retorno.registradoEm);
+          setErroRetorno("");
           setEditando(true);
         }}>Corrigir fechamento</Button>
       </div>
@@ -1560,7 +1563,7 @@ export default function FeirasPage() {
                           saida={registroSaida}
                           retorno={registroRetorno}
                           minimoAlocado={minimoAlocado}
-                          onConfirmar={(itens) => confirmarRetorno(chave, itens, registroRetorno?.registradoEm)}
+                          onConfirmar={(itens, versao) => confirmarRetorno(chave, itens, versao)}
                         />
                       </div>
                     )}

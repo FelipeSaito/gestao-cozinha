@@ -13,7 +13,7 @@ export async function consultarComplementoRelatorio(
   if (!usuario) throw new Error("Entre com sua conta para consultar relatórios.");
   const token = await usuario.getIdToken();
   if (auth.currentUser?.uid !== usuario.uid) throw new Error("A sessão mudou.");
-  const resposta = await fetch(`/api/relatorios?${new URLSearchParams({ inicio, fim })}`, {
+  const resposta = await fetch(`/api/relatorio?${new URLSearchParams({ inicio, fim })}`, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${token}` },
     signal,
