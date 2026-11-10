@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { collection, onSnapshot } from "firebase/firestore";
+import { firebaseClient } from "@/lib/firebase";
 import {
   CalendarDays,
   ChevronLeft,
@@ -93,11 +95,30 @@ function nomeDaFeira(feiraId: string, extras: FeiraCadastrada[]) {
   return extras.find((feira) => feira.id === feiraId)?.nome ?? feiraId;
 }
 
+type QuantidadesPorOrigem = Record<string, number>;
+
+function somarDestinados(usos: Reaproveitamentos): QuantidadesPorOrigem {
+  const totais: QuantidadesPorOrigem = Object.create(null);
+  for (const destino of Object.values(usos)) {
+    for (const [origem, quantidade] of Object.entries(destino)) {
+      totais[origem] = (totais[origem] ?? 0) + quantidade;
+    }
+  }
+  return totais;
+}
+
+function saldoDaSobra(sobraram: number, destinados: number, descartados: number) {
+  return Math.max(0, sobraram - destinados - descartados);
+}
+
 function ReaproveitamentoFeira({
   chaveDestino,
   sabores,
   retornos,
   usos,
+  destinados,
+  descartes,
+  origemPrioritaria,
   onSalvar,
   feirasCadastradas,
 }: {
@@ -105,6 +126,9 @@ function ReaproveitamentoFeira({
   sabores: SaborPlanejado[];
   retornos: Retornos;
   usos: Reaproveitamentos;
+  destinados: QuantidadesPorOrigem;
+  descartes: QuantidadesPorOrigem;
+  origemPrioritaria?: string;
   onSalvar: (valores: Record<string, number>) => Promise<void>;
   feirasCadastradas: FeiraCadastrada[];
 }) {
@@ -120,27 +144,35 @@ function ReaproveitamentoFeira({
       ),
     ).map((item) => ({
       id: chaveDaSobra(chaveOrigem, item.saborId),
+      chaveOrigem,
       nome: item.nome,
       data: chaveOrigem.split(":")[0],
       feira: nomeFeira,
       total: item.sobraram,
     }));
-  });
+  }).sort((a, b) => Number(b.chaveOrigem === origemPrioritaria) - Number(a.chaveOrigem === origemPrioritaria));
+  const [usosAoAbrir] = useState(() => usos[chaveDestino] ?? {});
+  const usosAtuais = usos[chaveDestino] ?? {};
+  const destinoMudou = Object.keys(usosAtuais).length !== Object.keys(usosAoAbrir).length ||
+    Object.entries(usosAoAbrir).some(([origem, valor]) => usosAtuais[origem] !== valor);
   const [valores, setValores] = useState<Record<string, string>>(() =>
     Object.fromEntries(origens.map((origem) => [origem.id, String(usos[chaveDestino]?.[origem.id] ?? "")])),
   );
   const [erro, setErro] = useState("");
   const [salvandoUso, setSalvandoUso] = useState(false);
 
+  function limiteDaOrigem(origem: { id: string; total: number }) {
+    const outros = (destinados[origem.id] ?? 0) - (usosAtuais[origem.id] ?? 0);
+    return saldoDaSobra(origem.total, outros, descartes[origem.id] ?? 0);
+  }
+
   async function salvar() {
+    if (salvandoUso || destinoMudou) return;
     const proximo: Record<string, number> = {};
     for (const origem of origens) {
       const texto = valores[origem.id]?.trim() ?? "";
       const quantidade = texto === "" ? 0 : Number(texto);
-      const usadosEmOutrasFeiras = Object.entries(usos).reduce(
-        (total, [chave, itens]) => total + (chave === chaveDestino ? 0 : (itens[origem.id] ?? 0)), 0,
-      );
-      if (!Number.isSafeInteger(quantidade) || quantidade < 0 || quantidade > origem.total - usadosEmOutrasFeiras) {
+      if (!Number.isSafeInteger(quantidade) || quantidade < 0 || quantidade > limiteDaOrigem(origem)) {
         setErro(`Confira a quantidade de ${origem.nome} de ${origem.feira}: o saldo disponível foi ultrapassado.`);
         return;
       }
@@ -176,17 +208,17 @@ function ReaproveitamentoFeira({
   return (
     <div style={{ display: "grid", gap: 12, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
       <h5 style={{ fontSize: 16 }}>Pastéis da geladeira para esta feira</h5>
-      {origens.length === 0 ? <p>Não há sobras anteriores dos sabores planejados.</p> : <>
+      {origemPrioritaria && <p>O lote escolhido aparece primeiro entre os sabores compatíveis.</p>}
+      {destinoMudou && <p role="alert">Este destino foi alterado em outro dispositivo. Feche e abra novamente para revisar os valores atuais.</p>}
+      {origens.length === 0 ? <p>Não há saldo disponível de sobras para os sabores planejados.</p> : <>
         <p>Informe quantos pastéis de cada origem serão usados. Deixe vazio quando não for usar.</p>
         {origens.map((origem) => {
-          const outros = Object.entries(usos).reduce((total, [chave, itens]) =>
-            total + (chave === chaveDestino ? 0 : (itens[origem.id] ?? 0)), 0,
-          );
+          const limite = limiteDaOrigem(origem);
           return (
             <label key={origem.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, paddingBlock: 8, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
-              <span><strong>{origem.nome}</strong><br /><small>{origem.feira} · {origem.data.split("-").reverse().join("/")} · disponível: {Math.max(0, origem.total - outros)}</small></span>
+              <span><strong>{origem.nome}</strong><br /><small>{origem.feira} · {origem.data.split("-").reverse().join("/")} · limite para esta feira: {limite}</small></span>
               <span style={{ display: "grid", gap: 4 }}>Usar nesta feira
-                <input type="number" min={0} step={1} inputMode="numeric" value={valores[origem.id] ?? ""}
+                <input type="number" min={0} max={limite} step={1} inputMode="numeric" disabled={salvandoUso || destinoMudou} value={valores[origem.id] ?? ""}
                   onChange={(event) => { setValores((atual) => ({ ...atual, [origem.id]: event.target.value })); setErro(""); }}
                   style={{ width: 110, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
               </span>
@@ -194,7 +226,7 @@ function ReaproveitamentoFeira({
           );
         })}
         {erro && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erro}</p>}
-        <Button type="button" variant="primary" disabled={salvandoUso} onClick={salvar}>
+        <Button type="button" variant="primary" disabled={salvandoUso || destinoMudou} onClick={salvar}>
           {salvandoUso ? "Salvando..." : "Salvar reaproveitamento"}
         </Button>
       </>}
@@ -273,6 +305,134 @@ function RegistroProducaoFeira({
       })}
       {erro && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erro}</p>}
     </div>
+  );
+}
+
+type GrupoSobrasHistorico = {
+  chave: string;
+  itens: Array<{ saborId: string; nome: string; disponivel: number }>;
+};
+
+function montarHistoricoFeira(
+  feiraId: string,
+  dataSelecionada: string,
+  saidas: Saidas,
+  retornos: Retornos,
+  sabores: SaborPlanejado[],
+  sobras: GrupoSobrasHistorico[],
+  usosDaFeira: Record<string, number>,
+) {
+  const edicoes = Object.keys(saidas)
+    .filter((chave) => chave.slice(11) === feiraId && chave.slice(0, 10) < dataSelecionada)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, 3);
+  type LinhaHistorico = {
+    nome: string;
+    edicoes: Record<string, { sairam: number | null; sobraram: number | null }>;
+    disponivel: number;
+    destinado: number;
+  };
+  const linhas = new Map<string, LinhaHistorico>();
+
+  function obterLinha(nome: string): LinhaHistorico {
+    const id = nomeNormalizado(nome);
+    const linha = linhas.get(id) ?? { nome, edicoes: {}, disponivel: 0, destinado: 0 };
+    linhas.set(id, linha);
+    return linha;
+  }
+
+  for (const sabor of sabores) obterLinha(sabor.nome);
+  for (const chave of edicoes) {
+    for (const item of saidas[chave].itens) {
+      const linha = obterLinha(item.nome);
+      const registro = linha.edicoes[chave] ?? { sairam: null, sobraram: null };
+      registro.sairam = (registro.sairam ?? 0) + item.separado;
+      linha.edicoes[chave] = registro;
+    }
+    for (const item of retornos[chave]?.itens ?? []) {
+      const linha = obterLinha(item.nome);
+      const registro = linha.edicoes[chave] ?? { sairam: null, sobraram: null };
+      registro.sobraram = (registro.sobraram ?? 0) + item.sobraram;
+      linha.edicoes[chave] = registro;
+    }
+  }
+
+  for (const grupo of sobras) {
+    for (const item of grupo.itens) {
+      const linha = linhas.get(nomeNormalizado(item.nome));
+      if (!linha) continue;
+      linha.disponivel += item.disponivel;
+      linha.destinado += usosDaFeira[chaveDaSobra(grupo.chave, item.saborId)] ?? 0;
+    }
+  }
+
+  return {
+    edicoes,
+    linhas: [...linhas.entries()].sort(([, a], [, b]) => a.nome.localeCompare(b.nome, "pt-BR")),
+  };
+}
+
+function HistoricoPlanejamento({
+  feira, data, saidas, retornos, sabores, sobras, usosDaFeira, saldoSincronizado,
+}: {
+  feira: FeiraProgramada;
+  data: string;
+  saidas: Saidas;
+  retornos: Retornos;
+  sabores: SaborPlanejado[];
+  sobras: GrupoSobrasHistorico[];
+  usosDaFeira: Record<string, number>;
+  saldoSincronizado: boolean;
+}) {
+  const { edicoes, linhas } = montarHistoricoFeira(feira.id, data, saidas, retornos, sabores, sobras, usosDaFeira);
+  const temDestinados = linhas.some(([, linha]) => linha.destinado > 0);
+  const estiloCelula = { padding: "10px 12px", textAlign: "left" as const, borderBottom: "1px solid var(--color-border)" };
+
+  return (
+    <details style={{ minWidth: 0, marginBottom: 16, padding: 12, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 700, minHeight: 44, alignContent: "center" }}>
+        Histórico para planejar{edicoes.length > 0 ? ` · ${edicoes.length} ${edicoes.length === 1 ? "edição" : "edições"}` : ""}
+      </summary>
+      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        {edicoes.length === 0
+          ? <p>Ainda não há saídas conferidas em datas anteriores neste cadastro.</p>
+          : <p>Últimas saídas conferidas de {feira.nome}, anteriores à data selecionada. “—” significa que não há registro para aquele sabor.</p>}
+        {linhas.length > 0 && (
+          <div role="region" aria-label={`Histórico por sabor de ${feira.nome}`} tabIndex={0} style={{ minWidth: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th scope="col" style={estiloCelula}>Sabor</th>
+                  {edicoes.map((chave) => <th scope="col" key={chave} style={estiloCelula}>{chave.slice(0, 10).split("-").reverse().join("/")}</th>)}
+                  <th scope="col" style={estiloCelula}>Disponíveis</th>
+                  {temDestinados && <th scope="col" style={estiloCelula}>Já destinados aqui</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {linhas.map(([id, linha]) => (
+                  <tr key={id}>
+                    <th scope="row" style={estiloCelula}>{linha.nome}</th>
+                    {edicoes.map((chave) => (
+                      <td key={chave} style={estiloCelula}>
+                        <div>Saíram: {linha.edicoes[chave]?.sairam ?? "—"}</div>
+                        <div>Sobraram: {linha.edicoes[chave]?.sobraram ?? "—"}</div>
+                      </td>
+                    ))}
+                    <td style={estiloCelula}>{saldoSincronizado ? linha.disponivel : "—"}</td>
+                    {temDestinados && <td style={estiloCelula}>{linha.destinado}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {linhas.length > 0 && (
+          <p>{saldoSincronizado
+            ? "Disponíveis: sobras dos lotes anteriores para os sabores da tabela, descontando destinações e descartes. Para usar esse saldo, salve o planejamento e abra “Usar pastéis da geladeira”."
+            : "Saldo indisponível enquanto os descartes não estiverem sincronizados."}</p>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -673,6 +833,16 @@ export default function FeirasPage() {
   const [importandoSaidas, setImportandoSaidas] = useState(false);
   const [saidaAberta, setSaidaAberta] = useState<string | null>(null);
   const [retornos, setRetornos] = useState<Retornos>({});
+  const [sobrasDetalhadas, setSobrasDetalhadas] = useState<Record<string, boolean>>({});
+  const [descartesRemotos, setDescartesRemotos] = useState<{
+    uid: string; itens: QuantidadesPorOrigem;
+  } | null>(null);
+  const [erroDescartes, setErroDescartes] = useState("");
+  const [atalhoSobras, setAtalhoSobras] = useState<{
+    origem: string; data: string; destinoId: string;
+  } | null>(null);
+  const [avisoSobras, setAvisoSobras] = useState("");
+  const podeConsultarSaldo = Boolean(usuario?.perfis.some((perfil) => perfil === "dono" || perfil === "producao"));
   const [retornosLocais, setRetornosLocais] = useState<Retornos>({});
   const [fechamentosSincronizados, setFechamentosSincronizados] = useState(false);
   const [erroFechamentos, setErroFechamentos] = useState("");
@@ -836,6 +1006,34 @@ export default function FeirasPage() {
       },
     );
   }, [carregando, usuario?.id]);
+
+  useEffect(() => {
+    if (carregando || !usuario?.id || !podeConsultarSaldo) return;
+    const uid = usuario.id;
+    const { db } = firebaseClient();
+    return onSnapshot(collection(db, "descartesFeira"), { includeMetadataChanges: true }, (snapshot) => {
+      if (snapshot.metadata.fromCache) {
+        setDescartesRemotos(null);
+        setErroDescartes("Aguardando conexão para consultar os descartes.");
+        return;
+      }
+      const itens: QuantidadesPorOrigem = Object.create(null);
+      for (const documento of snapshot.docs) {
+        const quantidade: unknown = documento.data().quantidade;
+        if (typeof quantidade !== "number" || !Number.isSafeInteger(quantidade) || quantidade < 0) {
+          setDescartesRemotos(null);
+          setErroDescartes("Há um registro de descarte inválido. Confira os dados antes de destinar sobras.");
+          return;
+        }
+        itens[documento.id] = quantidade;
+      }
+      setDescartesRemotos({ uid, itens });
+      setErroDescartes("");
+    }, () => {
+      setDescartesRemotos(null);
+      setErroDescartes("Não foi possível consultar os descartes. Confira sua conexão e a permissão de leitura no Firestore.");
+    });
+  }, [carregando, usuario?.id, podeConsultarSaldo]);
 
   useEffect(() => {
     if (carregando || !usuario?.id) return;
@@ -1010,7 +1208,9 @@ export default function FeirasPage() {
 
   async function salvarReaproveitamento(chave: string, valores: Record<string, number>) {
     if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode destinar as sobras.");
-    if (!usosSincronizados) throw new Error("Aguarde a conexão com o Firestore.");
+    if (!usosSincronizados || descartesRemotos?.uid !== usuario.id) {
+      throw new Error("Aguarde a sincronização do saldo das sobras.");
+    }
     await salvarReaproveitamentoFirestore(chave, valores);
     setReaproveitamentoAberto(null);
   }
@@ -1090,22 +1290,47 @@ export default function FeirasPage() {
       }).format(data)
     : "";
 
+  const saldoSincronizado = descartesRemotos?.uid === usuario.id;
+  const descartes = saldoSincronizado && descartesRemotos ? descartesRemotos.itens : {};
+  const destinados = somarDestinados(reaproveitamentos);
+
   const sobrasAnteriores = Object.entries(retornos)
     .filter(([chave]) => chave.split(":")[0] < dataSelecionada)
-    .flatMap(([chave, retorno]) =>
-      retorno.itens.filter((item) => item.sobraram > 0).map((item) => {
-        const [dataOrigem, feiraId] = chave.split(":");
-        const nomeFeira = nomeDaFeira(feiraId, feirasCadastradas);
-        return {
-          id: `${chave}:${item.saborId}`,
-          data: dataOrigem,
-          feira: nomeFeira,
-          sabor: item.nome,
-          quantidade: item.sobraram,
-        };
-      }),
-    )
-    .sort((a, b) => b.data.localeCompare(a.data));
+    .map(([chave, retorno]) => {
+      const [dataOrigem, feiraId] = chave.split(":");
+      const itens = retorno.itens.filter((item) => item.sobraram > 0).map((item) => {
+        const origem = chaveDaSobra(chave, item.saborId);
+        const destinado = destinados[origem] ?? 0;
+        const descartado = descartes[origem] ?? 0;
+        return { ...item, destinado, descartado, disponivel: saldoDaSobra(item.sobraram, destinado, descartado) };
+      });
+      return {
+        chave,
+        data: dataOrigem,
+        feira: nomeDaFeira(feiraId, feirasCadastradas),
+        itens,
+        total: itens.reduce((soma, item) => soma + item.sobraram, 0),
+        disponivel: itens.reduce((soma, item) => soma + item.disponivel, 0),
+      };
+    })
+    .filter((grupo) => grupo.total > 0)
+    .sort((a, b) => b.data.localeCompare(a.data) || a.feira.localeCompare(b.feira, "pt-BR"));
+  const totalSobrasAnteriores = sobrasAnteriores.reduce((soma, grupo) => soma + grupo.total, 0);
+  const totalDisponivel = sobrasAnteriores.reduce((soma, grupo) => soma + grupo.disponivel, 0);
+  const grupoAtalho = sobrasAnteriores.find((grupo) => grupo.chave === atalhoSobras?.origem);
+  const destinosAtalho = atalhoSobras && grupoAtalho && atalhoSobras.data > grupoAtalho.data
+    ? feirasDaData(atalhoSobras.data, feirasCadastradas).filter((feira) => {
+        const chave = chaveDaFeira(atalhoSobras.data, feira.id);
+        return !saidas[chave] && (planejamentos[chave] ?? []).some((sabor) =>
+          sabor.quantidade > 0 && grupoAtalho.itens.some((item) =>
+            nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome) &&
+            (item.disponivel > 0 || (reaproveitamentos[chave]?.[chaveDaSobra(grupoAtalho.chave, item.saborId)] ?? 0) > 0),
+          ),
+        );
+      })
+    : [];
+  const destinoAtalho = destinosAtalho.find((feira) => feira.id === atalhoSobras?.destinoId);
+  const chaveDestinoAtalho = atalhoSobras && destinoAtalho ? chaveDaFeira(atalhoSobras.data, destinoAtalho.id) : null;
 
   return (
     <AppLayout
@@ -1159,19 +1384,91 @@ export default function FeirasPage() {
             )}
         </section>
         {!modoFuncionario && sobrasAnteriores.length > 0 && (
-          <section aria-labelledby="titulo-sobras" style={{ display: "grid", gap: 12, padding: 16, border: "1px solid var(--color-border)", borderRadius: "var(--radius-large)", background: "var(--color-surface)" }}>
-            <h2 id="titulo-sobras" style={{ fontSize: 18 }}>Sobras registradas de feiras anteriores</h2>
-            <p style={{ color: "var(--color-text-secondary)" }}>Confira a data e a origem antes de planejar qualquer reaproveitamento. Este painel ainda não desconta pastéis.</p>
-            <ul style={{ display: "grid", gap: 8, padding: 0, listStyle: "none" }}>
-              {sobrasAnteriores.map((sobra) => (
-                <li key={sobra.id} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, padding: 12, border: "1px solid var(--color-border)", borderRadius: "var(--radius-medium)" }}>
-                  <strong>{sobra.sabor}</strong>
-                  <span>{sobra.quantidade} pastéis</span>
-                  <small>{sobra.feira} · {sobra.data.split("-").reverse().join("/")}</small>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <details aria-labelledby="titulo-sobras" style={{ minWidth: 0, padding: 16, border: "1px solid var(--color-border)", borderRadius: "var(--radius-large)", background: "var(--color-surface)" }}>
+            <summary style={{ cursor: "pointer", minHeight: 44, alignContent: "center", overflowWrap: "anywhere" }}>
+              <strong id="titulo-sobras" style={{ fontSize: 18 }}>Sobras registradas de feiras anteriores</strong>
+              <span style={{ display: "inline-block", marginInlineStart: 8 }}>Disponíveis: <strong>{saldoSincronizado ? totalDisponivel : "—"}</strong></span>
+            </summary>
+            <div style={{ display: "grid", gap: 12, minWidth: 0, marginTop: 12 }}>
+              <p style={{ color: "var(--color-text-secondary)" }}>{totalSobrasAnteriores} pastéis registrados nos fechamentos anteriores à data selecionada. O saldo desconta as quantidades destinadas e descartadas.</p>
+              {!saldoSincronizado && <p role="status">{erroDescartes || "Consultando descartes para calcular o saldo..."}</p>}
+              {avisoSobras && <p role="status">{avisoSobras}</p>}
+              <ul style={{ display: "grid", gap: 12, minWidth: 0, margin: 0, padding: 0, listStyle: "none" }}>
+                {sobrasAnteriores.map((grupo) => {
+                  const aberto = Boolean(sobrasDetalhadas[grupo.chave]);
+                  const dataOrigem = grupo.data.split("-").reverse().join("/");
+                  const detalhesId = `detalhes-sobras-${grupo.chave}`;
+                  return (
+                    <li key={grupo.chave} style={{ display: "grid", gap: 12, minWidth: 0, padding: 14, border: "1px solid var(--color-border)", borderRadius: "var(--radius-medium)" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div style={{ display: "grid", gap: 5, minWidth: 0, overflowWrap: "anywhere" }}>
+                          <strong>{grupo.feira} · {dataOrigem}</strong>
+                          <span>{grupo.total} registrados · {saldoSincronizado ? grupo.disponivel : "—"} disponíveis</span>
+                        </div>
+                        <Button type="button" variant="secondary" aria-expanded={aberto} aria-controls={detalhesId}
+                          aria-label={`${aberto ? "Ocultar" : "Ver"} detalhes das sobras de ${grupo.feira} em ${dataOrigem}`}
+                          onClick={() => setSobrasDetalhadas((atuais) => ({ ...atuais, [grupo.chave]: !atuais[grupo.chave] }))}>
+                          {aberto ? "Ocultar detalhes" : "Ver detalhes"}
+                        </Button>
+                      </div>
+                      <div id={detalhesId} hidden={!aberto} role="region" aria-label={`Sabores que sobraram de ${grupo.feira} em ${dataOrigem}`}>
+                        {aberto && (
+                          <ul style={{ display: "grid", gap: 0, margin: 0, padding: 0, listStyle: "none" }}>
+                            {grupo.itens.map((item) => (
+                              <li key={item.saborId} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, paddingBlock: 10, borderTop: "1px solid var(--color-border)", overflowWrap: "anywhere" }}>
+                                <strong>{item.nome}</strong>
+                                <span>{item.sobraram} sobraram · {item.destinado} destinados · {saldoSincronizado ? item.descartado : "—"} descartados · <strong>{saldoSincronizado ? item.disponivel : "—"} disponíveis</strong></span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      {podePlanejar && saldoSincronizado && (grupo.disponivel > 0 || atalhoSobras?.origem === grupo.chave) && (
+                        <Button type="button" variant="secondary" aria-expanded={atalhoSobras?.origem === grupo.chave}
+                          onClick={() => {
+                            setAvisoSobras("");
+                            setReaproveitamentoAberto(null);
+                            setAtalhoSobras((atual) => atual?.origem === grupo.chave
+                              ? null : { origem: grupo.chave, data: dataSelecionada, destinoId: "" });
+                          }}>
+                          {atalhoSobras?.origem === grupo.chave ? "Fechar destino" : "Destinar sobras"}
+                        </Button>
+                      )}
+                      {saldoSincronizado && podePlanejar && atalhoSobras?.origem === grupo.chave && (
+                        <div style={{ display: "grid", minWidth: 0, gap: 10 }}>
+                          <label style={{ display: "grid", gap: 5 }}>
+                            Data de destino
+                            <input type="date" value={atalhoSobras.data}
+                              onChange={(evento) => setAtalhoSobras({ origem: grupo.chave, data: evento.target.value, destinoId: "" })} />
+                          </label>
+                          <label style={{ display: "grid", gap: 5 }}>
+                            Feira de destino
+                            <select value={destinoAtalho?.id ?? ""} disabled={destinosAtalho.length === 0}
+                              onChange={(evento) => setAtalhoSobras({ ...atalhoSobras, destinoId: evento.target.value })}>
+                              <option value="">Selecione uma feira</option>
+                              {destinosAtalho.map((feira) => <option key={feira.id} value={feira.id}>{feira.nome}</option>)}
+                            </select>
+                          </label>
+                          {destinosAtalho.length === 0 && <p>Escolha uma data posterior à origem com uma feira planejada para esses sabores e sem saída conferida.</p>}
+                          {chaveDestinoAtalho && destinoAtalho && (
+                            <ReaproveitamentoFeira key={chaveDestinoAtalho} chaveDestino={chaveDestinoAtalho}
+                              sabores={planejamentos[chaveDestinoAtalho] ?? []}
+                              retornos={retornos} usos={reaproveitamentos} destinados={destinados} descartes={descartes}
+                              origemPrioritaria={grupo.chave} feirasCadastradas={feirasCadastradas}
+                              onSalvar={async (valores) => {
+                                await salvarReaproveitamento(chaveDestinoAtalho, valores);
+                                setAtalhoSobras(null);
+                                setAvisoSobras(`Sobras atualizadas para ${destinoAtalho.nome}.`);
+                              }} />
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </details>
         )}
         <section className={styles.intro} style={{ alignItems: "flex-start" }}>
           <div>
@@ -1328,8 +1625,8 @@ export default function FeirasPage() {
                     const separador = origem.lastIndexOf("|");
                     const origemChave = origem.slice(0, separador);
                     const item = retornos[origemChave]?.itens.find((candidato) => candidato.saborId === origem.slice(separador + 1));
-                    const destinado = Object.values(reaproveitamentos).reduce((soma, destino) => soma + (destino[origem] ?? 0), 0);
-                    return !item || quantidade < 0 || destinado > item.sobraram ||
+                    const destinado = destinados[origem] ?? 0;
+                    return !item || quantidade < 0 || destinado + (descartes[origem] ?? 0) > item.sobraram ||
                       !sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
                   });
                 const registrosDaFeira = producoes[chave] ?? [];
@@ -1469,7 +1766,20 @@ export default function FeirasPage() {
                     </Button>}
 
                     {podePlanejar && aberta && salvandoPadrao === null && (
-                      <div id={`planejamento-${feira.id}`} style={{ width: "100%" }}>
+                      <div id={`planejamento-${feira.id}`} style={{ width: "100%", minWidth: 0 }}>
+                        {!registroRetorno && (
+                          <HistoricoPlanejamento
+                            key={chave}
+                            feira={feira}
+                            data={dataSelecionada}
+                            saidas={saidas}
+                            retornos={retornos}
+                            sabores={sabores}
+                            sobras={sobrasAnteriores}
+                            usosDaFeira={usoDaFeira}
+                            saldoSincronizado={saldoSincronizado}
+                          />
+                        )}
                         <PlanejadorSabores
                           key={chave}
                           sabores={sabores}
@@ -1482,14 +1792,18 @@ export default function FeirasPage() {
                     {podePlanejar && !registroSaida && (sabores.length > 0 || Object.keys(usoDaFeira).length > 0) && (
                       <Button type="button" variant="secondary" aria-expanded={reaproveitamentoAberto === chave}
                         aria-controls={reaproveitamentoAberto === chave ? `reaproveitamento-${feira.id}` : undefined}
-                        onClick={() => setReaproveitamentoAberto((atual) => atual === chave ? null : chave)}>
+                        disabled={!saldoSincronizado}
+                        onClick={() => {
+                          setAtalhoSobras(null);
+                          setReaproveitamentoAberto((atual) => atual === chave ? null : chave);
+                        }}>
                         {reaproveitamentoAberto === chave ? "Fechar reaproveitamento" : "Usar pastéis da geladeira"}
                       </Button>
                     )}
-                    {podePlanejar && !registroSaida && reaproveitamentoAberto === chave && (
+                    {podePlanejar && saldoSincronizado && !registroSaida && reaproveitamentoAberto === chave && (
                       <div id={`reaproveitamento-${feira.id}`} style={{ width: "100%" }}>
                         <ReaproveitamentoFeira key={chave} chaveDestino={chave} sabores={sabores} retornos={retornos}
-                          usos={reaproveitamentos} feirasCadastradas={feirasCadastradas}
+                          usos={reaproveitamentos} destinados={destinados} descartes={descartes} feirasCadastradas={feirasCadastradas}
                           onSalvar={(valores) => salvarReaproveitamento(chave, valores)} />
                       </div>
                     )}

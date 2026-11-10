@@ -507,6 +507,119 @@ function GraficoFaturamento({ grupos }: { grupos: GrupoFaturamento[] }) {
   </>;
 }
 
+type RegistroPrevisao = ReturnType<typeof agruparFaturamento>["registros"][number];
+type DiaComparavel = RegistroPrevisao & { centavos: number };
+
+function locaisComparaveis(registros: RegistroPrevisao[]) {
+  const porLocal = new Map<string, { id: string; nome: string; tipo: TipoLocalFaturamento; dias: DiaComparavel[] }>();
+  for (const registro of registros) {
+    if (registro.centavos === null) continue;
+    const local = porLocal.get(registro.feiraId) ?? {
+      id: registro.feiraId, nome: registro.feira, tipo: registro.tipo, dias: [],
+    };
+    local.dias.push({ ...registro, centavos: registro.centavos });
+    porLocal.set(local.id, local);
+  }
+  return [...porLocal.values()]
+    .filter((local) => new Set(local.dias.map((dia) => dia.data)).size >= 2)
+    .map((local) => ({ ...local, dias: local.dias.sort((a, b) => b.data.localeCompare(a.data)) }))
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+}
+
+function variacaoFaturamento(base: number, comparada: number) {
+  const diferenca = comparada - base;
+  return { diferenca, percentual: base === 0 ? null : diferenca / base * 100 };
+}
+
+function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevisao[]; saidas: Saidas }) {
+  const locais = useMemo(() => locaisComparaveis(registros), [registros]);
+  const [localId, setLocalId] = useState("");
+  const [dataBase, setDataBase] = useState("");
+  const [dataComparada, setDataComparada] = useState("");
+  const local = locais.find((opcao) => opcao.id === localId) ?? locais[0];
+  const datas = local?.dias ?? [];
+  const comparada = datas.find((dia) => dia.data === dataComparada) ?? datas[0];
+  const outrasDatas = datas.filter((dia) => dia.data !== comparada?.data);
+  const base = outrasDatas.find((dia) => dia.data === dataBase) ?? outrasDatas[0];
+  const formatarData = (data: string) => data.split("-").reverse().join("/");
+  const variacao = base && comparada ? variacaoFaturamento(base.centavos, comparada.centavos) : null;
+
+  const porSabor = new Map<string, { nome: string; base: number; comparada: number }>();
+  if (base && comparada) {
+    for (const [coluna, dia] of [["base", base], ["comparada", comparada]] as const) {
+      for (const sabor of saboresDaFeira(dia.chave, {}, saidas, {})) {
+        const linha = porSabor.get(sabor.id) ?? { nome: sabor.nome, base: 0, comparada: 0 };
+        linha[coluna] += sabor.separados ?? 0;
+        porSabor.set(sabor.id, linha);
+      }
+    }
+  }
+  const sabores = [...porSabor].sort(([, a], [, b]) => a.nome.localeCompare(b.nome, "pt-BR"));
+  const sinal = (numero: number) => numero > 0 ? "+" : "";
+
+  return (
+    <section className={styles.panel} aria-labelledby="comparar-datas-faturamento">
+      <div className={styles.heading}><div>
+        <h2 id="comparar-datas-faturamento">Comparar faturamento entre datas</h2>
+        <p>Veja como a previsão pelas saídas mudou entre dois dias da mesma feira ou evento.</p>
+      </div></div>
+      {!local || !base || !comparada || !variacao ? (
+        <p className={styles.emptyChart}>São necessárias duas datas com saídas conferidas e calculáveis no mesmo cadastro. Amplie o período ou selecione todas as feiras e eventos.</p>
+      ) : (
+        <>
+          <div className={styles.filters}>
+            <label>Feira ou evento
+              <select value={local.id} onChange={(evento) => {
+                setLocalId(evento.target.value);
+                setDataBase("");
+                setDataComparada("");
+              }}>
+                {locais.map((opcao) => <option key={opcao.id} value={opcao.id}>{opcao.nome} · {opcao.tipo === "evento" ? "Evento" : "Feira"}</option>)}
+              </select>
+            </label>
+            <label>Data-base
+              <select value={base.data} onChange={(evento) => setDataBase(evento.target.value)}>
+                {datas.map((dia) => <option key={dia.data} value={dia.data} disabled={dia.data === comparada.data}>{formatarData(dia.data)}</option>)}
+              </select>
+            </label>
+            <label>Data comparada
+              <select value={comparada.data} onChange={(evento) => setDataComparada(evento.target.value)}>
+                {datas.map((dia) => <option key={dia.data} value={dia.data} disabled={dia.data === base.data}>{formatarData(dia.data)}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className={styles.massSummary} aria-live="polite">
+            <div><span>Previsto · {formatarData(base.data)}</span><strong>{formatarFaturamento(base.centavos)}</strong></div>
+            <div><span>Previsto · {formatarData(comparada.data)}</span><strong>{formatarFaturamento(comparada.centavos)}</strong></div>
+            <div><span>Diferença em relação à data-base</span>
+              <strong>{sinal(variacao.diferenca)}{formatarFaturamento(variacao.diferenca)}</strong>
+              <span>{variacao.percentual === null ? "Percentual indisponível: a data-base tem valor zero."
+                : `${sinal(variacao.percentual)}${variacao.percentual.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`}</span>
+            </div>
+          </div>
+          <GraficoBarras dados={[
+            { id: base.data, nome: formatarData(base.data), valores: { previsao: base.centavos / 100 } },
+            { id: comparada.data, nome: formatarData(comparada.data), valores: { previsao: comparada.centavos / 100 } },
+          ]} series={[{ chave: "previsao", nome: "Faturamento previsto", cor: "#16806a" }]} moeda vazio="Selecione duas datas." />
+          <details className={styles.chartData}>
+            <summary>Ver quantidades por sabor</summary>
+            <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Comparação das saídas por sabor">
+              <table className={styles.chartTable}>
+                <thead><tr><th scope="col">Sabor</th><th scope="col">{formatarData(base.data)}</th><th scope="col">{formatarData(comparada.data)}</th><th scope="col">Diferença</th></tr></thead>
+                <tbody>{sabores.map(([id, sabor]) => <tr key={id}>
+                  <th scope="row">{sabor.nome}</th><td>{sabor.base}</td><td>{sabor.comparada}</td>
+                  <td>{sinal(sabor.comparada - sabor.base)}{sabor.comparada - sabor.base}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </details>
+        </>
+      )}
+      <p className={styles.note}>Considera o período e o local selecionados acima. É uma previsão pelas saídas conferidas.</p>
+    </section>
+  );
+}
+
 function RelatoriosConteudo() {
   const { usuario } = useAuth();
 
@@ -1748,6 +1861,8 @@ function RelatoriosConteudo() {
                     : "Todas as saídas conferidas deste filtro foram calculadas."}
                     {" "}Feiras sem saída conferida não entram na soma. Preços atuais: tradicionais R$ 13; especiais, inclusive de frango, R$ 22; minis R$ 20. Esses preços também se aplicam às datas antigas consultadas. A previsão não desconta sobras, perdas, descontos ou cortesias; não representa o valor recebido nem o lucro.</p>
                 </section>
+
+                <ComparacaoFaturamento registros={faturamento.registros} saidas={saidas} />
 
                 <section className={styles.kpiGrid} aria-label="Resumo do período">
                   <article className={styles.kpiCard}><span className={styles.kpiIcon}><CalendarDays size={20} aria-hidden="true" /></span>
