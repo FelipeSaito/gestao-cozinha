@@ -66,10 +66,11 @@ import { campoCsv, type CustoOrdemRelatorio, type DescarteRelatorio } from "@/li
 
 import {
   agruparFaturamento,
+  calcularItensVendidos,
+  precoVendaCentavos,
   tipoLocalFaturamento,
   type TipoLocalFaturamento,
   formatarFaturamento,
-  type GrupoFaturamento,
 } from "@/lib/faturamento-feira";
 
 import styles from "./page.module.css";
@@ -287,33 +288,6 @@ function agruparOperacao(
   };
 }
 
-function custosPorData(consumos: ConsumoRegistrado[]): PontoGrafico[] {
-  const dias = new Map<string, { total: number; completo: boolean }>();
-  const formatador = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" });
-  for (const item of consumos) {
-  if (
-    typeof item.registradoEm !== "string" ||
-    !item.registradoEm.trim()
-  ) continue;
-
-  const data = new Date(item.registradoEm);
-  if (!Number.isFinite(data.getTime())) continue;
-
-  // Continue com o restante do código existente.
-    const partes = formatador.formatToParts(data);
-    const chave = ["year", "month", "day"].map(tipo => partes.find(parte => parte.type === tipo)?.value).join("-");
-    const atual = dias.get(chave) ?? { total: 0, completo: true };
-    const valido = typeof item.custoUnitario === "number" && Number.isFinite(item.custoUnitario) && item.custoUnitario >= 0 &&
-      Number.isFinite(item.quantidade) && item.quantidade >= 0 && Number.isFinite(item.quantidade * item.custoUnitario);
-    if (valido) atual.total += item.quantidade * (item.custoUnitario ?? 0);
-    else atual.completo = false;
-    dias.set(chave, atual);
-  }
-  return [...dias].sort(([a], [b]) => a.localeCompare(b)).map(([id, dado]) => ({
-    id, nome: dataCurta(id), valores: { custo: dado.completo && Number.isFinite(dado.total) ? dado.total : null },
-  }));
-}
-
 function LegendaGrafico({ series }: { series: SerieGrafico[] }) {
   return <ul className={styles.legend}>{series.map(serie => <li key={serie.chave}>
     <span style={{ background: serie.cor }} aria-hidden="true" />{serie.nome}
@@ -418,97 +392,64 @@ function GraficoSobras({ sobras, separados, fechadas }: { sobras: number; separa
   </>;
 }
 
-function GraficoCustos({ dados }: { dados: PontoGrafico[] }) {
-  const serie = [{ chave: "custo", nome: "Insumos consumidos", cor: "#16806a" }];
-  const validos = dados.filter(dado => dado.valores.custo !== null);
-  const maximo = Math.max(1, ...validos.map(dado => dado.valores.custo ?? 0));
-  const x = (i: number) => dados.length === 1 ? 350 : 65 + i * 610 / Math.max(1, dados.length - 1);
-  const y = (valor: number) => 210 - valor / maximo * 185;
-  // Cada lacuna reinicia o traço; ausência de custo não vira zero.
-  let aberto = false;
-  const caminho = dados.map((dado, indice) => {
-    const valor = dado.valores.custo;
-    if (valor == null) { aberto = false; return ""; }
-    const comando = aberto ? "L" : "M";
-    aberto = true;
-    return `${comando} ${x(indice)} ${y(valor)}`;
-  }).join(" ");
-  return <>
-    {!dados.length ? <div className={styles.emptyChart}>Nenhum consumo registrado neste período.</div> : <>
-      <svg className={styles.chartSvg} viewBox="0 0 700 255" role="img" aria-label="Custo diário dos insumos consumidos, em reais">
-        {[0, 0.5, 1].map(fracao => <g key={fracao}>
-          <line x1={65} x2={680} y1={y(maximo * fracao)} y2={y(maximo * fracao)} className={styles.gridLine} />
-          <text x={56} y={y(maximo * fracao) + 4} textAnchor="end" className={styles.axisText}>{numeroGrafico(maximo * fracao)}</text>
-        </g>)}
-        <path d={caminho} fill="none" stroke="#16806a" strokeWidth={3} strokeLinejoin="round" />
-        {dados.map((dado, i) => <g key={dado.id}>
-          {dado.valores.custo != null && <circle cx={x(i)} cy={y(dado.valores.custo)} r={5} fill="#16806a" stroke="white" strokeWidth={2}
-            tabIndex={0} aria-label={`${dado.nome}: ${formatCurrency(dado.valores.custo)}`}><title>{`${dado.nome}: ${formatCurrency(dado.valores.custo)}`}</title></circle>}
-          {(i % Math.max(1, Math.ceil(dados.length / 6)) === 0 || i === dados.length - 1) &&
-            <text x={x(i)} y={239} textAnchor="middle" className={styles.axisText}>{dado.nome}</text>}
-        </g>)}
-      </svg>
-      {!validos.length && <p className={styles.note}>Os consumos não têm custo histórico completo para desenhar o gráfico.</p>}
-      <DadosDoGrafico dados={dados} series={serie} moeda />
-    </>}
-  </>;
-}
-
-
-function GraficoFaturamento({ grupos }: { grupos: GrupoFaturamento[] }) {
-  const validos = grupos.filter(grupo => grupo.centavos !== null);
-  const maximo = Math.max(1, ...validos.map(grupo => (grupo.centavos ?? 0) / 100));
-  const primeiro = grupos.length ? Date.parse(`${grupos[0].id}T12:00:00Z`) : 0;
-  const ultimo = grupos.length ? Date.parse(`${grupos[grupos.length - 1].id}T12:00:00Z`) : 0;
-  const x = (id: string) => primeiro === ultimo ? 380 : 82 + (Date.parse(`${id}T12:00:00Z`) - primeiro) / (ultimo - primeiro) * 590;
-  const y = (valor: number) => 210 - valor / maximo * 180;
-  const diasEntre = Math.round((ultimo - primeiro) / 86400000);
-  const marcas = grupos.length ? [...new Set(Array.from({ length: Math.min(5, diasEntre + 1) }, (_, i) => {
-    const deslocamento = diasEntre === 0 ? 0 : Math.round(diasEntre * i / Math.min(4, diasEntre));
-    return new Date(primeiro + deslocamento * 86400000).toISOString().slice(0, 10);
-  }))] : [];
-  const escala = new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
-  let aberto = false;
-  const caminho = grupos.map(grupo => {
-    if (grupo.centavos === null) { aberto = false; return ""; }
-    const comando = aberto ? "L" : "M";
-    aberto = true;
-    return `${comando} ${x(grupo.id)} ${y(grupo.centavos / 100)}`;
-  }).join(" ");
-  return <>
-    {!grupos.length ? <div className={styles.emptyChart}>Nenhuma saída conferida nas datas selecionadas.</div> : <>
-      <svg className={styles.chartSvg} viewBox="0 0 700 265" role="img" aria-label="Faturamento previsto pelas saídas, por data da feira, em reais">
-        <text x={18} y={18} className={styles.axisText}>R$</text>
-        {[0, 0.5, 1].map(fracao => <g key={fracao}>
-          <line x1={82} x2={672} y1={y(maximo * fracao)} y2={y(maximo * fracao)} className={styles.gridLine} />
-          <text x={72} y={y(maximo * fracao) + 4} textAnchor="end" className={styles.axisText}>{escala.format(maximo * fracao)}</text>
-        </g>)}
-        <path d={caminho} fill="none" stroke="#16806a" strokeWidth={3} />
-        {grupos.map(grupo => <g key={grupo.id}>
-          {grupo.centavos !== null && <circle cx={x(grupo.id)} cy={y(grupo.centavos / 100)} r={5} fill="#16806a"
-            tabIndex={0} aria-label={`${grupo.nome}: ${formatarFaturamento(grupo.centavos)}, calculado em ${grupo.calculadas} de ${grupo.saidas} saídas`}>
-            <title>{`${grupo.nome}: ${formatarFaturamento(grupo.centavos)} · ${grupo.calculadas}/${grupo.saidas} saídas calculadas`}</title>
-          </circle>}
-        </g>)}
-        {marcas.map(data => <text key={data} x={x(data)} y={240} textAnchor="middle" className={styles.axisText}>{data.slice(5).split("-").reverse().join("/")}</text>)}
-      </svg>
-      {!validos.length && <p className={styles.note}>Há saídas registradas, mas seus dados não permitem calcular a previsão. Confira os sabores e as quantidades.</p>}
-      <details className={styles.chartData}><summary>Consultar valores por data</summary>
-        <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Valores de faturamento por data">
-          <table className={styles.chartTable}>
-            <thead><tr><th scope="col">Data da feira</th><th scope="col">Faturamento previsto</th><th scope="col">Saídas calculadas</th></tr></thead>
-            <tbody>{grupos.map(grupo => <tr key={grupo.id}><th scope="row">{grupo.nome}</th>
-              <td>{grupo.centavos === null ? "Não calculado" : formatarFaturamento(grupo.centavos)}</td>
-              <td>{grupo.calculadas} de {grupo.saidas}{grupo.calculadas < grupo.saidas ? " · parcial" : ""}</td></tr>)}</tbody>
-          </table>
-        </div>
-      </details>
-    </>}
-  </>;
-}
-
 type RegistroPrevisao = ReturnType<typeof agruparFaturamento>["registros"][number];
 type DiaComparavel = RegistroPrevisao & { centavos: number };
+
+const SERIES_FATURAMENTO: SerieGrafico[] = [
+  { chave: "vendas", nome: "Vendas calculadas · fechadas", cor: "#16806a" },
+  { chave: "previsao", nome: "Previsão · abertas", cor: "#b7791f" },
+];
+
+function pontosFaturamentoSeparados(
+  registros: RegistroPrevisao[], porData: boolean, tipo?: TipoLocalFaturamento,
+): PontoGrafico[] {
+  const grupos = new Map<string, PontoGrafico>();
+  for (const registro of registros) {
+    if (tipo && registro.tipo !== tipo) continue;
+    const id = porData ? registro.data : registro.feiraId;
+    const ponto = grupos.get(id) ?? { id,
+      nome: porData ? registro.data.split("-").reverse().join("/") : registro.feira,
+      valores: { vendas: null, previsao: null } };
+    const chave = registro.baseCalculo === "fechamento" ? "vendas" : "previsao";
+    if (registro.centavos !== null) ponto.valores[chave] = (ponto.valores[chave] ?? 0) + registro.centavos / 100;
+    grupos.set(id, ponto);
+  }
+  return [...grupos.values()].sort((a, b) => porData ? a.id.localeCompare(b.id) : a.nome.localeCompare(b.nome, "pt-BR"));
+}
+
+
+function DetalhesCalculoFaturamento({ registro, saidas, retornos }: {
+  registro: RegistroPrevisao; saidas: Saidas; retornos: Retornos;
+}) {
+  const fechado = registro.baseCalculo === "fechamento";
+  const itens = saidas[registro.chave]?.itens ?? [];
+  return <details style={{ width: "100%", minWidth: 0, textAlign: "left" }}>
+    <summary style={{ cursor: "pointer", minHeight: 44, alignContent: "center" }}
+      aria-label={`Ver cálculo de ${registro.feira} em ${registro.data.split("-").reverse().join("/")}`}>
+      Ver cálculo
+    </summary>
+    {registro.centavos === null ? <p>Não foi possível conferir a saída com o fechamento. Revise os registros desta feira.</p> : <>
+      <p>{fechado ? "Vendas calculadas: saída menos sobras de cada sabor." : "Previsão: quantidade da saída, pois ainda não há fechamento."}</p>
+      <table className={styles.chartTable}>
+        <thead><tr><th scope="col">Sabor</th><th scope="col">Saiu</th><th scope="col">Voltou</th>
+          <th scope="col">{fechado ? "Vendeu" : "Previsto"}</th><th scope="col">Preço unitário</th><th scope="col">Subtotal</th></tr></thead>
+        <tbody>{itens.map((item) => {
+          const retorno = retornos[registro.chave]?.itens.find((valor) => valor.saborId === item.saborId);
+          const vendido = registro.itensVendidos?.find((valor) => valor.saborId === item.saborId);
+          const quantidade = fechado ? vendido?.quantidade : item.separado;
+          const preco = precoVendaCentavos(item, { ...registro, precosVenda: saidas[registro.chave]?.precosVenda });
+          return <tr key={item.saborId}><th scope="row">{nomeSabor(item.nome)}</th><td>{item.separado}</td>
+            <td>{fechado ? retorno?.sobraram ?? "—" : "—"}</td><td>{quantidade ?? "—"}</td>
+            <td>{formatarFaturamento(preco)}</td><td>{quantidade === undefined ? "—" : formatarFaturamento(quantidade * preco)}</td></tr>;
+        })}</tbody>
+        <tfoot><tr><th scope="row" colSpan={5}>Total {fechado ? "das vendas calculadas" : "previsto"}</th>
+          <td>{formatarFaturamento(registro.centavos)}</td></tr></tfoot>
+      </table>
+      <p className={styles.note}>Preços da feira na data indicada. Descontos, cortesias e perdas durante a feira não estão incluídos.</p>
+    </>}
+  </details>;
+}
+
 
 function locaisComparaveis(registros: RegistroPrevisao[]) {
   const porLocal = new Map<string, { id: string; nome: string; tipo: TipoLocalFaturamento; dias: DiaComparavel[] }>();
@@ -524,6 +465,95 @@ function locaisComparaveis(registros: RegistroPrevisao[]) {
     .filter((local) => new Set(local.dias.map((dia) => dia.data)).size >= 2)
     .map((local) => ({ ...local, dias: local.dias.sort((a, b) => b.data.localeCompare(a.data)) }))
     .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+}
+
+type SaborRanking = {
+  id: string; nome: string; saidas: number; sobras: number; vendidos: number; edicoes: number;
+};
+
+function calcularRankingSabores(linhas: Linha[], saidas: Saidas, retornos: Retornos) {
+  const sabores = new Map<string, SaborRanking>();
+  let fechamentos = 0;
+  let invalidos = 0;
+  for (const linha of linhas) {
+    const retorno = retornos[linha.chave];
+    if (!retorno) continue;
+    const saida = saidas[linha.chave];
+    const vendidos = calcularItensVendidos(saida?.itens, retorno.itens);
+    if (!vendidos || !saida) { invalidos++; continue; }
+    fechamentos++;
+    const nestaEdicao = new Set<string>();
+    for (const item of vendidos) {
+      const separado = saida.itens.find((valor) => valor.saborId === item.saborId)!.separado;
+      if (separado === 0) continue;
+      const id = normalizar(item.nome) || item.saborId;
+      const sabor = sabores.get(id) ?? { id, nome: nomeSabor(item.nome), saidas: 0, sobras: 0, vendidos: 0, edicoes: 0 };
+      sabor.saidas += separado;
+      sabor.vendidos += item.quantidade;
+      sabor.sobras += separado - item.quantidade;
+      if (!nestaEdicao.has(id)) { sabor.edicoes++; nestaEdicao.add(id); }
+      sabores.set(id, sabor);
+    }
+  }
+  return { sabores: [...sabores.values()], fechamentos, invalidos };
+}
+
+function RankingSaboresFeira({ linhas, saidas, retornos }: {
+  linhas: Linha[]; saidas: Saidas; retornos: Retornos;
+}) {
+  const [localId, setLocalId] = useState("");
+  const [ordem, setOrdem] = useState("vendidos");
+  const locais = [...new Map(linhas.map((linha) => [linha.feiraId, { id: linha.feiraId, nome: linha.feira }])).values()]
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  const local = locais.find((item) => item.id === localId) ?? locais[0];
+  const selecionadas = local ? linhas.filter((linha) => linha.feiraId === local.id) : [];
+  const ranking = calcularRankingSabores(selecionadas, saidas, retornos);
+  const taxa = (item: SaborRanking) => item.saidas > 0 ? item.sobras / item.saidas * 100 : 0;
+  const porVenda = [...ranking.sabores].sort((a, b) => b.vendidos - a.vendidos || a.nome.localeCompare(b.nome, "pt-BR"));
+  const porSobra = [...ranking.sabores].sort((a, b) => b.sobras - a.sobras || a.nome.localeCompare(b.nome, "pt-BR"));
+  const ordenados = ordem === "sobras" ? porSobra : ordem === "taxa"
+    ? [...ranking.sabores].sort((a, b) => taxa(b) - taxa(a) || b.saidas - a.saidas || a.nome.localeCompare(b.nome, "pt-BR"))
+    : porVenda;
+  return <section className={styles.panel} aria-labelledby="ranking-sabores-feira">
+    <div className={styles.heading}><div>
+      <h2 id="ranking-sabores-feira">Ranking de sabores por feira</h2>
+      <p>Confira os mais vendidos e os que mais voltam no período selecionado.</p>
+    </div></div>
+    {!local ? <p>Nenhuma feira ou evento nos filtros selecionados.</p> : <>
+      <div className={styles.filters}>
+        <label>Feira ou evento<select value={local.id} onChange={(evento) => setLocalId(evento.target.value)}>
+          {locais.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+        </select></label>
+        <label>Ordenar tabela<select value={ordem} onChange={(evento) => setOrdem(evento.target.value)}>
+          <option value="vendidos">Mais vendidos</option><option value="sobras">Mais sobras em unidades</option>
+          <option value="taxa">Maior percentual de sobra</option>
+        </select></label>
+      </div>
+      <p className={styles.note}>{ranking.fechamentos} edições com fechamento válido · {selecionadas.filter((linha) => !retornos[linha.chave]).length} sem fechamento, fora do ranking.
+        {ranking.invalidos > 0 && ` ${ranking.invalidos} fechamento(s) inconsistente(s), fora do cálculo.`}</p>
+      {!ordenados.length ? <p>Sem sabores com saída positiva e fechamento válido para este local no período.</p> : <>
+        <div className={styles.chartGrid}>
+          <div style={{ minWidth: 0 }}><h3>Mais vendidos · até 5 sabores</h3>
+            <GraficoBarras dados={porVenda.filter((item) => item.vendidos > 0).slice(0, 5).map((item) => ({ id: item.id, nome: item.nome, valores: { quantidade: item.vendidos } }))}
+              series={[{ chave: "quantidade", nome: "Vendidos", cor: "#16806a" }]} vazio="Nenhum pastel vendido nos fechamentos selecionados." />
+          </div>
+          <div style={{ minWidth: 0 }}><h3>Mais sobras · até 5 sabores</h3>
+            <GraficoBarras dados={porSobra.filter((item) => item.sobras > 0).slice(0, 5).map((item) => ({ id: item.id, nome: item.nome, valores: { quantidade: item.sobras } }))}
+              series={[{ chave: "quantidade", nome: "Sobras", cor: "#b7791f" }]} vazio="Nenhuma sobra nos fechamentos selecionados." />
+          </div>
+        </div>
+        <div className={styles.tableScroll} tabIndex={0} role="region" aria-label={`Ranking de sabores de ${local.nome}`}>
+          <table className={styles.chartTable}><thead><tr><th scope="col">Posição</th><th scope="col">Sabor</th>
+            <th scope="col">Edições com saída</th><th scope="col">Saiu</th><th scope="col">Vendeu</th><th scope="col">Voltou</th><th scope="col">Sobra (%)</th></tr></thead>
+            <tbody>{ordenados.map((item, indice) => <tr key={item.id}><td>{indice + 1}</td><th scope="row">{item.nome}</th>
+              <td>{item.edicoes}</td><td>{item.saidas}</td><td>{item.vendidos}</td><td>{item.sobras}</td>
+              <td>{taxa(item).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</td></tr>)}</tbody>
+          </table>
+        </div>
+      </>}
+      <p className={styles.note}>Percentual de sobra = total que voltou ÷ total que saiu × 100. São consideradas apenas as edições fechadas deste cadastro, dentro dos filtros de período e local. Sabores sem saída não entram no ranking. Confira o número de edições antes de ajustar o planejamento. As sobras representam o retorno original, mesmo quando reaproveitado, doado ou descartado depois.</p>
+    </>}
+  </section>;
 }
 
 function variacaoFaturamento(base: number, comparada: number) {
@@ -547,7 +577,10 @@ function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevi
   const porSabor = new Map<string, { nome: string; base: number; comparada: number }>();
   if (base && comparada) {
     for (const [coluna, dia] of [["base", base], ["comparada", comparada]] as const) {
-      for (const sabor of saboresDaFeira(dia.chave, {}, saidas, {})) {
+      const itensComparados = dia.baseCalculo === "fechamento"
+        ? (dia.itensVendidos ?? []).map((item) => ({ id: item.saborId, nome: nomeSabor(item.nome), separados: item.quantidade }))
+        : saboresDaFeira(dia.chave, {}, saidas, {});
+      for (const sabor of itensComparados) {
         const linha = porSabor.get(sabor.id) ?? { nome: sabor.nome, base: 0, comparada: 0 };
         linha[coluna] += sabor.separados ?? 0;
         porSabor.set(sabor.id, linha);
@@ -561,7 +594,7 @@ function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevi
     <section className={styles.panel} aria-labelledby="comparar-datas-faturamento">
       <div className={styles.heading}><div>
         <h2 id="comparar-datas-faturamento">Comparar faturamento entre datas</h2>
-        <p>Veja como a previsão pelas saídas mudou entre dois dias da mesma feira ou evento.</p>
+        <p>Compare duas datas do mesmo local. Com fechamento: vendas calculadas; sem fechamento: previsão pela saída. A variação também reflete reajustes de preço.</p>
       </div></div>
       {!local || !base || !comparada || !variacao ? (
         <p className={styles.emptyChart}>São necessárias duas datas com saídas conferidas e calculáveis no mesmo cadastro. Amplie o período ou selecione todas as feiras e eventos.</p>
@@ -589,8 +622,8 @@ function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevi
             </label>
           </div>
           <div className={styles.massSummary} aria-live="polite">
-            <div><span>Previsto · {formatarData(base.data)}</span><strong>{formatarFaturamento(base.centavos)}</strong></div>
-            <div><span>Previsto · {formatarData(comparada.data)}</span><strong>{formatarFaturamento(comparada.centavos)}</strong></div>
+            <div><span>{base.baseCalculo === "fechamento" ? "Vendas calculadas" : "Previsto"} · {formatarData(base.data)}</span><strong>{formatarFaturamento(base.centavos)}</strong></div>
+            <div><span>{comparada.baseCalculo === "fechamento" ? "Vendas calculadas" : "Previsto"} · {formatarData(comparada.data)}</span><strong>{formatarFaturamento(comparada.centavos)}</strong></div>
             <div><span>Diferença em relação à data-base</span>
               <strong>{sinal(variacao.diferenca)}{formatarFaturamento(variacao.diferenca)}</strong>
               <span>{variacao.percentual === null ? "Percentual indisponível: a data-base tem valor zero."
@@ -598,11 +631,15 @@ function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevi
             </div>
           </div>
           <GraficoBarras dados={[
-            { id: base.data, nome: formatarData(base.data), valores: { previsao: base.centavos / 100 } },
-            { id: comparada.data, nome: formatarData(comparada.data), valores: { previsao: comparada.centavos / 100 } },
-          ]} series={[{ chave: "previsao", nome: "Faturamento previsto", cor: "#16806a" }]} moeda vazio="Selecione duas datas." />
+            { id: base.data, nome: formatarData(base.data), valores: {
+              vendas: base.baseCalculo === "fechamento" ? base.centavos / 100 : null,
+              previsao: base.baseCalculo === "previsao" ? base.centavos / 100 : null } },
+            { id: comparada.data, nome: formatarData(comparada.data), valores: {
+              vendas: comparada.baseCalculo === "fechamento" ? comparada.centavos / 100 : null,
+              previsao: comparada.baseCalculo === "previsao" ? comparada.centavos / 100 : null } },
+          ]} series={SERIES_FATURAMENTO} moeda vazio="Selecione duas datas." />
           <details className={styles.chartData}>
-            <summary>Ver quantidades por sabor</summary>
+            <summary>Ver quantidades por sabor</summary><p className={styles.note}>Nas datas fechadas, são mostradas as quantidades vendidas (saída menos sobras). Nas demais, são mostradas as quantidades da saída. Confira a base de cada data antes de comparar.</p>
             <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Comparação das saídas por sabor">
               <table className={styles.chartTable}>
                 <thead><tr><th scope="col">Sabor</th><th scope="col">{formatarData(base.data)}</th><th scope="col">{formatarData(comparada.data)}</th><th scope="col">Diferença</th></tr></thead>
@@ -627,9 +664,7 @@ function RelatoriosConteudo() {
     useState(hojeBrasil);
 
   const [inicio, setInicio] =
-    useState(() =>
-      diasAtras(hojeBrasil(), 29),
-    );
+    useState(() => `${hojeBrasil().slice(0, 7)}-01`);
 
   const [feiraId, setFeiraId] =
     useState("");
@@ -1187,7 +1222,13 @@ function RelatoriosConteudo() {
     custoConhecido.length;
 
   const descartesFiltrados = descartes.filter((item) => !feiraId || item.feiraId === feiraId);
-  const perdasConfirmadas = descartesFiltrados.reduce((total, item) => total + item.quantidade, 0);
+  const perdasConfirmadas = descartesFiltrados
+  .filter((item) => item.tipo !== "doacao")
+  .reduce((total, item) => total + item.quantidade, 0);
+
+  const doacoesConfirmadas = descartesFiltrados
+  .filter((item) => item.tipo === "doacao")
+  .reduce((total, item) => total + item.quantidade, 0);
 
   const ordensMassa = useMemo(
     () =>
@@ -1381,16 +1422,26 @@ function RelatoriosConteudo() {
   const dadosDashboard = useMemo(() => agruparOperacao(
     linhas, planos, saidas, retornos, producoes, inicio, fim,
   ), [linhas, planos, saidas, retornos, producoes, inicio, fim]);
-  const dadosCustos = useMemo(() => custosPorData(consumos), [consumos]);
-  const faturamento = useMemo(() => agruparFaturamento(linhas, saidas), [linhas, saidas]);
+  const faturamento = useMemo(() => agruparFaturamento(linhas, saidas, retornos), [linhas, saidas, retornos]);
+
+  const resumoValores = useMemo(() => {
+    const somar = (base: "fechamento" | "previsao", tipo?: TipoLocalFaturamento) => {
+      const registros = faturamento.registros.filter((item) => item.baseCalculo === base && (!tipo || item.tipo === tipo));
+      const validos = registros.filter((item) => item.centavos !== null);
+      return { centavos: validos.length ? validos.reduce((total, item) => total + (item.centavos ?? 0), 0) : null,
+        quantidade: registros.length, invalidos: registros.length - validos.length };
+    };
+    return { vendas: somar("fechamento"), previsao: somar("previsao"),
+      feiras: somar("fechamento", "feira"), eventos: somar("fechamento", "evento") };
+  }, [faturamento]);
 
   function exportarFaturamento() {
     if (!podeMostrar || !faturamento.registros.length) return;
-    baixarCsv(`faturamento-previsto-${inicio}-a-${fim}.csv`,
-      ["Data", "Local ID", "Feira ou evento", "Tipo", "Faturamento previsto pelas saídas (BRL)", "Situação do valor"],
+    baixarCsv(`faturamento-${inicio}-a-${fim}.csv`,
+      ["Data", "Local ID", "Feira ou evento", "Tipo", "Faturamento calculado ou previsto (BRL)", "Situação do valor"],
       faturamento.registros.map(item => [item.data, item.feiraId, item.feira, item.tipo === "evento" ? "Evento" : "Feira",
         item.centavos === null ? null : item.centavos / 100,
-        item.centavos === null ? "Dados inválidos na saída" : "Previsão calculada"]));
+        item.centavos === null ? "Dados inválidos na saída ou no fechamento" : item.baseCalculo === "fechamento" ? "Vendas calculadas pelo fechamento" : "Previsão pela saída"]));
   }
 
   function escolherPeriodo(dias: number | "mes") {
@@ -1662,10 +1713,10 @@ function RelatoriosConteudo() {
 
   function exportarDescartes() {
     if (!dono || !complementoAtual || carregandoDescartes || erroDescartes || periodoInvalido) return;
-    baixarCsv(`descartes-${inicio}-a-${fim}.csv`,
-      ["Descarte ID", "Registrado em UTC", "Data da feira de origem", "Feira ID", "Sabor ID", "Quantidade", "Motivo", "Responsável"],
-      descartesFiltrados.map((item) => [item.id, item.registradoEm, item.dataFeira, item.feiraId,
-        item.saborId, item.quantidade, item.motivo, item.registradoPor]));
+    baixarCsv(`descartes-e-doacoes-${inicio}-a-${fim}.csv`,
+      ["Movimento ID", "Tipo", "Registrado em UTC", "Data da feira de origem", "Feira ID", "Sabor ID", "Quantidade", "Motivo / observação", "Destinatário", "Responsável"],
+      descartesFiltrados.map((item) => [item.id, item.tipo === "doacao" ? "Doação" : "Descarte", item.registradoEm, item.dataFeira, item.feiraId,
+        item.saborId, item.quantidade, item.motivo, item.destinatario ?? "", item.registradoPor]));
   }
 
   function exportarProducao() {
@@ -1748,6 +1799,25 @@ function RelatoriosConteudo() {
                   styles.filters
                 }
               >
+                <label>
+                  Consultar mês
+                  <input
+                    type="month"
+                    value={inicio.slice(0, 7)}
+                    onChange={(evento) => {
+                      const selecionado = evento.target.value;
+                      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(selecionado)) return;
+                      const ano = Number(selecionado.slice(0, 4));
+                      if (ano < 2020) return;
+                      const ultimoDia = new Date(`${selecionado}-01T12:00:00Z`);
+                      ultimoDia.setUTCMonth(ultimoDia.getUTCMonth() + 1, 0);
+                      setInicio(`${selecionado}-01`);
+                      setFim(ultimoDia.toISOString().slice(0, 10));
+                    }}
+                    min="2020-01"
+                  />
+                </label>
+
                 <label>
                   De
 
@@ -1844,25 +1914,31 @@ function RelatoriosConteudo() {
               <>
                 <section className={styles.panel} aria-labelledby="resumo-faturamento">
                   <div className={styles.heading}>
-                    <div><h2 id="resumo-faturamento">Faturamento previsto · feiras e eventos</h2>
-                      <p>Quantidade de pastéis nas saídas conferidas × preço de venda. Feiras e eventos separados, com um total geral para os filtros selecionados.</p></div>
+                    <div><h2 id="resumo-faturamento">Faturamento · feiras e eventos</h2>
+                      <p>Com fechamento: saída menos sobras por sabor × preço da feira na data. Sem fechamento: previsão pela saída. Feiras e eventos ficam separados e também compõem o total geral.</p></div>
                     <Button type="button" variant="secondary" onClick={exportarFaturamento}
-                      disabled={!faturamento.registros.length}>Exportar previsão CSV</Button>
+                      disabled={!faturamento.registros.length}>Exportar faturamento CSV</Button>
                   </div>
                   <div className={styles.massSummary}>
-                    <div><span>Feiras · previsto no período</span><strong>{faturamento.feirasCentavos === null ? "—" : formatarFaturamento(faturamento.feirasCentavos)}</strong></div>
-                    <div><span>Eventos · previsto no período</span><strong>{faturamento.eventosCentavos === null ? "—" : formatarFaturamento(faturamento.eventosCentavos)}</strong></div>
-                    <div><span>Total geral · feiras + eventos</span><strong>{faturamento.totalCentavos === null ? "—" : formatarFaturamento(faturamento.totalCentavos)}</strong></div>
+                    <div><span>Vendas calculadas · feiras fechadas</span><strong>{resumoValores.vendas.centavos === null ? "—" : formatarFaturamento(resumoValores.vendas.centavos)}</strong>
+                      <small>{resumoValores.vendas.quantidade} fechamentos · {resumoValores.vendas.invalidos} sem cálculo válido</small></div>
+                    <div><span>Previsão · feiras ainda abertas</span><strong>{resumoValores.previsao.centavos === null ? "—" : formatarFaturamento(resumoValores.previsao.centavos)}</strong>
+                      <small>{resumoValores.previsao.quantidade} saídas sem fechamento · valor ainda não vendido</small></div>
+                    <div><span>Vendas calculadas · composição</span>
+                      <span>Feiras: {resumoValores.feiras.centavos === null ? "—" : formatarFaturamento(resumoValores.feiras.centavos)}</span>
+                      <span>Eventos: {resumoValores.eventos.centavos === null ? "—" : formatarFaturamento(resumoValores.eventos.centavos)}</span></div>
                   </div>
                   <p className={styles.note}>Saídas calculadas: {faturamento.calculadas} de {faturamento.saidas}. Liberdade está classificada como evento. Os totais respeitam o período e o local selecionados; “—” indica que não há uma saída calculável nessa categoria.</p>
                   <p className={styles.note}>{faturamento.semCalculo > 0
-                    ? "Total parcial: há saídas com dados inválidos. Esses registros não são tratados como zero."
+                    ? "Total parcial: há saídas ou fechamentos com dados inválidos. Esses registros não são tratados como zero."
                     : faturamento.saidas === 0 ? "Confirme a saída de uma feira para preencher os gráficos automaticamente."
                     : "Todas as saídas conferidas deste filtro foram calculadas."}
-                    {" "}Feiras sem saída conferida não entram na soma. Preços atuais: tradicionais R$ 13; especiais, inclusive de frango, R$ 22; minis R$ 20. Esses preços também se aplicam às datas antigas consultadas. A previsão não desconta sobras, perdas, descontos ou cortesias; não representa o valor recebido nem o lucro.</p>
+                    {" "}Feiras sem saída conferida não entram na soma. Preços por feira e data: o reajuste vale a partir de 10/11/2026; datas anteriores mantêm os preços antigos. Os cards separam as vendas calculadas das previsões. Nos gráficos, verde representa vendas calculadas e laranja representa previsões, em séries separadas. O cálculo pressupõe que saída menos sobras corresponde às vendas; não considera descontos, cortesias ou perdas durante a feira e não representa caixa conferido nem lucro. Descartes e doações das sobras após o fechamento não são vendas.</p>
                 </section>
 
+                <p className={styles.note}>Fechadas: {faturamento.fechadas} · Ainda em previsão: {faturamento.previstas}. Registros inválidos ficam fora da soma.</p>
                 <ComparacaoFaturamento registros={faturamento.registros} saidas={saidas} />
+                <RankingSaboresFeira linhas={linhas} saidas={saidas} retornos={retornos} />
 
                 <section className={styles.kpiGrid} aria-label="Resumo do período">
                   <article className={styles.kpiCard}><span className={styles.kpiIcon}><CalendarDays size={20} aria-hidden="true" /></span>
@@ -1882,6 +1958,7 @@ function RelatoriosConteudo() {
                 <section className={styles.secondaryKpis} aria-label="Sobras, perdas e custos">
                   <div><span>Sobras registradas</span><strong>{numeroGrafico(totais.sobras)} <small>pastéis</small></strong><p>Retornos das feiras no período</p></div>
                   <div><span>Descartes confirmados</span><strong>{descartesDisponiveis ? numeroGrafico(perdasConfirmadas) : "—"} <small>pastéis</small></strong><p>Pela data do descarte registrado</p></div>
+                  <div><span>Doações confirmadas</span><strong>{descartesDisponiveis ? numeroGrafico(doacoesConfirmadas) : "—"} <small>pastéis</small></strong><p>Pela data da doação registrada</p></div>
                   <div><span>Custo dos insumos · cozinha inteira</span><strong>{custosDisponiveis && consumos.length > 0 && consumosSemCusto === 0 ? formatCurrency(custoInsumos) : "—"}</strong>
                     <p>{!custosDisponiveis ? "Aguardando consulta dos custos" : consumosSemCusto > 0 ? `${consumosSemCusto} consumo(s) sem custo histórico` : !consumos.length ? "Nenhum consumo registrado" : "Insumos consumidos; sem mão de obra"}</p></div>
                 </section>
@@ -1895,38 +1972,44 @@ function RelatoriosConteudo() {
 
                 <div className={styles.chartGrid}>
                   <section className={`${styles.chartCard} ${styles.chartWide}`} aria-labelledby="evolucao-faturamento">
-                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>PREVISÃO PELAS SAÍDAS</span>
-                      <h2 id="evolucao-faturamento">Evolução do total geral</h2><p>Feiras e eventos somados por data, em reais.</p></div></div>
-                    <GraficoFaturamento grupos={faturamento.porData} />
-                    <p className={styles.note}>Dias sem saída conferida são omitidos. Saídas com dados inválidos podem deixar a soma parcial ou criar lacunas. A data é a da feira, não a do registro da saída.</p>
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>VENDAS E PREVISÕES SEPARADAS</span>
+                      <h2 id="evolucao-faturamento">Evolução por data</h2><p>Feiras e eventos por data, em reais. Vendas e previsões são mostradas separadamente.</p></div></div>
+                    <GraficoBarras dados={pontosFaturamentoSeparados(faturamento.registros, true)} series={SERIES_FATURAMENTO} moeda vazio="Nenhuma saída conferida nas datas selecionadas." />
+                    <p className={styles.note}>Dias sem saída conferida são omitidos. Valores inválidos ficam fora da soma, que pode ser parcial. “—” indica ausência de valor calculável nessa série. A data é a da feira.</p>
                   </section>
                   <section className={styles.chartCard} aria-labelledby="comparacao-faturamento">
-                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>FEIRAS · PREVISÃO EM REAIS</span>
-                      <h2 id="comparacao-faturamento">Faturamento previsto por feira</h2><p>Somente feiras, sem os eventos.</p></div></div>
-                    <GraficoBarras dados={faturamento.porFeira.filter(grupo => grupo.tipo === "feira").map(grupo => ({ id: grupo.id, nome: grupo.nome,
-                      valores: { faturamento: grupo.centavos === null ? null : grupo.centavos / 100 } }))}
-                      series={[{ chave: "faturamento", nome: "Previsão · feiras", cor: "#16806a" }]} moeda
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>FEIRAS · VALORES EM REAIS</span>
+                      <h2 id="comparacao-faturamento">Faturamento por feira</h2><p>Somente feiras, sem os eventos.</p></div></div>
+                    <GraficoBarras dados={pontosFaturamentoSeparados(faturamento.registros, false, "feira")}
+                      series={SERIES_FATURAMENTO} moeda
                       vazio="Nenhuma saída de feira nos filtros selecionados." />
                   </section>
                   <section className={styles.chartCard} aria-labelledby="faturamento-eventos">
-                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>EVENTOS · PREVISÃO EM REAIS</span>
-                      <h2 id="faturamento-eventos">Faturamento previsto por evento</h2><p>Eventos apresentados separadamente, incluindo Liberdade.</p></div></div>
-                    <GraficoBarras dados={faturamento.porFeira.filter(grupo => grupo.tipo === "evento").map(grupo => ({ id: grupo.id, nome: `${grupo.nome} · Evento`,
-                      valores: { faturamento: grupo.centavos === null ? null : grupo.centavos / 100 } }))}
-                      series={[{ chave: "faturamento", nome: "Previsão · eventos", cor: "#7255b3" }]} moeda
+                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>EVENTOS · VALORES EM REAIS</span>
+                      <h2 id="faturamento-eventos">Faturamento por evento</h2><p>Eventos apresentados separadamente, incluindo Liberdade.</p></div></div>
+                    <GraficoBarras dados={pontosFaturamentoSeparados(faturamento.registros, false, "evento")}
+                      series={SERIES_FATURAMENTO} moeda
                       vazio="Nenhuma saída de evento nos filtros selecionados." />
                   </section>
                   <section className={`${styles.chartCard} ${styles.chartWide}`} aria-labelledby="valores-faturamento">
                     <div className={styles.chartHeading}><div><h2 id="valores-faturamento">Valores por feira e evento</h2>
                       <p>Detalhamento das saídas usadas no total geral.</p></div></div>
-                    <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Faturamento previsto por feira e evento">
+                    <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Faturamento por feira e evento">
                       <table className={styles.chartTable}>
-                        <thead><tr><th scope="col">Data</th><th scope="col">Local</th><th scope="col">Tipo</th><th scope="col">Faturamento previsto</th></tr></thead>
-                        <tbody>{faturamento.registros.map(item => <tr key={item.chave}>
-                          <td>{item.data.split("-").reverse().join("/")}</td><th scope="row">{item.feira}</th>
-                          <td>{item.tipo === "evento" ? "Evento" : "Feira"}</td>
-                          <td>{item.centavos === null ? "Não calculado" : formatarFaturamento(item.centavos)}</td>
-                        </tr>)}</tbody>
+                        <thead><tr><th scope="col">Data</th><th scope="col">Local</th><th scope="col">Tipo</th><th scope="col">Base do cálculo</th><th scope="col">Faturamento</th></tr></thead>
+                        <tbody>{faturamento.registros.map(item => <Fragment key={item.chave}>
+                          <tr>
+                            <td>{item.data.split("-").reverse().join("/")}</td><th scope="row">{item.feira}</th>
+                            <td>{item.tipo === "evento" ? "Evento" : "Feira"}</td>
+                            <td>{item.baseCalculo === "fechamento" ? "Vendas calculadas" : "Previsão pela saída"}</td>
+                            <td>{item.centavos === null ? "Não calculado" : formatarFaturamento(item.centavos)}</td>
+                          </tr>
+                          <tr>
+                            <td colSpan={5} style={{ textAlign: "left", verticalAlign: "top", whiteSpace: "normal" }}>
+                              <DetalhesCalculoFaturamento registro={item} saidas={saidas} retornos={retornos} />
+                            </td>
+                          </tr>
+                        </Fragment>)}</tbody>
                       </table>
                       {!faturamento.registros.length && <p className={styles.note}>Nenhuma saída conferida nos filtros selecionados.</p>}
                     </div>
@@ -1964,13 +2047,7 @@ function RelatoriosConteudo() {
                     <p className={styles.note}>Compara quantidades absolutas, não taxa de sobra ou vendas. Consulte os demais sabores nas tabelas detalhadas.</p>
                   </section>
 
-                  <section className={`${styles.chartCard} ${styles.chartWide}`} aria-labelledby="grafico-custos">
-                    <div className={styles.chartHeading}><div><span className={styles.eyebrow}>CUSTOS DA COZINHA</span><h2 id="grafico-custos">Consumo de insumos</h2>
-                      <p>Custo diário registrado, em reais. Datas de São Paulo.</p></div><span className={styles.chartPill}>Cozinha inteira</span></div>
-                    {erroCustos ? <p role="alert" className={styles.error}>{erroCustos}</p> : !custosDisponiveis ?
-                      <div role="status" className={styles.emptyChart}>Carregando custos do período…</div> : <GraficoCustos dados={dadosCustos} />}
-                    <p className={styles.note}>Este gráfico usa o período e não é filtrado por feira. Não inclui mão de obra, frete ou outras despesas. Datas sem consumo são omitidas; custos incompletos aparecem como lacunas.</p>
-                  </section>
+
 
 
                 </div>
@@ -1983,7 +2060,7 @@ function RelatoriosConteudo() {
             <section className={styles.panel} aria-label="Exportações detalhadas">
               <h2>Dados para análise</h2>
               <p>CSV em UTF-8, separado por ponto e vírgula, com ponto decimal. Datas e horas identificadas como UTC devem ser convertidas para São Paulo na análise.</p>
-              <p>Consumos abrangem toda a cozinha. Descartes usam a data do registro e respeitam a feira selecionada. Produção de feira representa o acumulado por feira, sabor e funcionário, não cada evento de produção.</p>
+              <p>Consumos abrangem toda a cozinha. Descartes e doações usam a data do registro e respeitam a feira selecionada. Produção de feira representa o acumulado por feira, sabor e funcionário, não cada evento de produção.</p>
               <div className={styles.heading}>
                 <Button type="button" variant="secondary" onClick={exportarOrdens}
                   disabled={!complementoAtual || carregandoOrdens || Boolean(erroOrdens) || periodoInvalido || !ordens.length}>
@@ -1995,7 +2072,7 @@ function RelatoriosConteudo() {
                 </Button>
                 <Button type="button" variant="secondary" onClick={exportarDescartes}
                   disabled={!complementoAtual || carregandoDescartes || Boolean(erroDescartes) || periodoInvalido || !descartesFiltrados.length}>
-                  Exportar descartes CSV
+                  Exportar descartes e doações CSV
                 </Button>
                 <Button type="button" variant="secondary" onClick={exportarProducao}
                   disabled={!podeMostrar || carregandoProducao || Boolean(erroProducao) || !linhas.length}>
@@ -2003,6 +2080,42 @@ function RelatoriosConteudo() {
                 </Button>
               </div>
             </section>
+            <details className={styles.panel}>
+              <summary style={{ cursor: "pointer", minHeight: 44 }}>
+                <strong>Histórico de descartes e doações</strong>
+              </summary>
+              {!descartesDisponiveis ? (
+                <p role="status">{erroDescartes || "Carregando registros..."}</p>
+              ) : descartesFiltrados.length === 0 ? (
+                <p>Nenhum registro no período e na feira selecionados.</p>
+              ) : (
+                <div className={styles.tableScroll}>
+                  <table className={styles.table}>
+                    <thead><tr>
+                      <th>Data do registro</th><th>Tipo</th><th>Lote de origem</th>
+                      <th>Quantidade</th><th>Motivo / observação</th>
+                      <th>Destinatário</th><th>Responsável</th>
+                    </tr></thead>
+                    <tbody>
+                      {[...descartesFiltrados]
+                        .sort((a, b) => b.registradoEm.localeCompare(a.registradoEm))
+                        .map((item) => (
+                          <tr key={item.id}>
+                            <td>{new Date(item.registradoEm).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}</td>
+                            <td>{item.tipo === "doacao" ? "Doação" : "Descarte"}</td>
+                            <td>{item.feiraId} · {item.dataFeira.split("-").reverse().join("/")} · {item.saborId}</td>
+                            <td>{item.quantidade}</td>
+                            <td>{item.motivo || "—"}</td>
+                            <td>{item.destinatario || "—"}</td>
+                            <td>{item.registradoPor}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
+
 
             {erro && (
               <p

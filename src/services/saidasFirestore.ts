@@ -2,10 +2,11 @@
 
 import { onAuthStateChanged } from "firebase/auth";
 import {
-  collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, setDoc,
+  collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp,
   waitForPendingWrites, type Unsubscribe,
 } from "firebase/firestore";
 import { firebaseClient } from "@/lib/firebase";
+import { precosDaFeira, precosVendaValidos, type PrecosVenda } from "@/lib/faturamento-feira";
 
 export interface ItemSaida {
   saborId: string;
@@ -18,6 +19,7 @@ export interface RegistroSaida {
   itens: ItemSaida[];
   conferidoEm: string;
   conferidoPor: string;
+  precosVenda?: PrecosVenda;
 }
 
 export type Saidas = Record<string, RegistroSaida>;
@@ -52,9 +54,13 @@ export function escutarSaidas(
         return;
       }
       const proximas: Saidas = {};
-      snapshot.forEach((documento) => {
+      for (const documento of snapshot.docs) {
         const dados = documento.data();
         const data = dados.conferidoEm?.toDate?.();
+        if (dados.precosVenda !== undefined && !precosVendaValidos(dados.precosVenda)) {
+          falhar(new Error(`Preços inválidos na saída ${documento.id}. Confira o registro antes de consultar o faturamento.`));
+          return;
+        }
         if (CHAVE.test(documento.id) && Array.isArray(dados.itens) &&
           dados.itens.every(itemValido) && data instanceof Date &&
           typeof dados.conferidoPor === "string") {
@@ -62,16 +68,18 @@ export function escutarSaidas(
             itens: dados.itens,
             conferidoEm: data.toISOString(),
             conferidoPor: dados.conferidoPor,
+            ...(dados.precosVenda !== undefined ? { precosVenda: { ...dados.precosVenda } } : {}),
           };
         }
-      });
+      }
       receber(proximas);
     }, falhar);
   }, falhar);
   return () => { pararAuth(); pararDados?.(); };
 }
 
-export async function salvarSaidaFirestore(chave: string, itens: ItemSaida[]) {
+/** O nome permite identificar feiras cadastradas com ID automático. */
+export async function salvarSaidaFirestore(chave: string, itens: ItemSaida[], nomeFeira = "") {
   if (!CHAVE.test(chave) || itens.length === 0 || itens.length > 40 ||
     !itens.every(itemValido) || new Set(itens.map((item) => item.saborId)).size !== itens.length) {
     throw new Error("Revise os sabores e as quantidades da saída.");
@@ -80,32 +88,52 @@ export async function salvarSaidaFirestore(chave: string, itens: ItemSaida[]) {
   const usuario = auth.currentUser;
   if (!usuario) throw new Error("Entre com sua conta para confirmar a saída.");
   const perfil = (await getDoc(doc(db, "perfis", usuario.uid))).data();
-  const perfis = Array.isArray(perfil?.perfis) ? perfil.perfis : [perfil?.perfil];
+  const perfis = [perfil?.perfil, ...(Array.isArray(perfil?.perfis) ? perfil.perfis : [])];
   if (!perfis.includes("dono") && !perfis.includes("producao")) {
     throw new Error("Seu perfil não pode confirmar saídas.");
   }
   const separador = chave.indexOf(":");
-  await setDoc(doc(db, COLECAO, chave), {
-    data: chave.slice(0, separador),
-    feiraId: chave.slice(separador + 1),
-    itens,
-    conferidoPor: typeof perfil?.nome === "string" && perfil.nome.trim() ? perfil.nome : "Funcionário",
-    conferidoPorId: usuario.uid,
-    conferidoEm: serverTimestamp(),
+  const data = chave.slice(0, separador);
+  const feiraId = chave.slice(separador + 1);
+  const referencia = doc(db, COLECAO, chave);
+  await runTransaction(db, async (transacao) => {
+    const anterior = await transacao.get(referencia);
+    const fechamento = await transacao.get(doc(db, "fechamentosFeira", chave));
+    if (fechamento.exists()) throw new Error("A feira já foi fechada. A saída não pode ser alterada.");
+    const dados = anterior.data();
+    if (dados?.precosVenda !== undefined && !precosVendaValidos(dados.precosVenda)) {
+      throw new Error("Os preços salvos nesta saída são inválidos.");
+    }
+    // Correções de quantidade preservam os preços da primeira conferência.
+    // Saídas antigas sem preços continuam usando a tabela por feira/data.
+    const precosVenda = dados?.precosVenda ?? (!anterior.exists()
+      ? precosDaFeira({ data, feiraId, feira: nomeFeira }) : undefined);
+    transacao.set(referencia, {
+      data, feiraId, itens,
+      conferidoPor: typeof perfil?.nome === "string" && perfil.nome.trim() ? perfil.nome : "Funcionário",
+      conferidoPorId: usuario.uid,
+      conferidoEm: serverTimestamp(),
+      ...(precosVenda !== undefined ? { precosVenda: { ...precosVenda } } : {}),
+      ...(dados?.dataOriginal !== undefined ? { dataOriginal: dados.dataOriginal, importadoPorId: dados.importadoPorId } : {}),
+    });
   });
   await waitForPendingWrites(db);
 }
 
-/** Importa apenas conferências que ainda não existem no banco. */
+/** Importações antigas não recebem preços atuais como se fossem preços históricos. */
 export async function importarSaidaLocal(chave: string, saida: RegistroSaida) {
   if (!CHAVE.test(chave) || !Array.isArray(saida.itens) ||
     saida.itens.length === 0 || saida.itens.length > 40 ||
-    !saida.itens.every(itemValido)) throw new Error("Registro local inválido.");
+    !saida.itens.every(itemValido) ||
+    new Set(saida.itens.map((item) => item.saborId)).size !== saida.itens.length ||
+    (saida.precosVenda !== undefined && !precosVendaValidos(saida.precosVenda))) {
+    throw new Error("Registro local inválido.");
+  }
   const { auth, db } = firebaseClient();
   const usuario = auth.currentUser;
   if (!usuario) throw new Error("Entre com sua conta para importar.");
   const perfil = (await getDoc(doc(db, "perfis", usuario.uid))).data();
-  const perfis = Array.isArray(perfil?.perfis) ? perfil.perfis : [perfil?.perfil];
+  const perfis = [perfil?.perfil, ...(Array.isArray(perfil?.perfis) ? perfil.perfis : [])];
   if (!perfis.includes("dono")) throw new Error("Somente o Dono pode importar saídas antigas.");
   const separador = chave.indexOf(":");
   const referencia = doc(db, COLECAO, chave);
@@ -119,8 +147,8 @@ export async function importarSaidaLocal(chave: string, saida: RegistroSaida) {
       conferidoPorId: usuario.uid,
       importadoPorId: usuario.uid,
       conferidoEm: serverTimestamp(),
-      // A data original fica separada da data de importação.
       dataOriginal: saida.conferidoEm,
+      ...(saida.precosVenda !== undefined ? { precosVenda: { ...saida.precosVenda } } : {}),
     });
     return true;
   });

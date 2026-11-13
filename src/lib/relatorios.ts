@@ -14,6 +14,8 @@ export interface DescarteRelatorio {
   saborId: string;
   quantidade: number;
   motivo: string;
+  tipo?: "descarte" | "doacao";
+  destinatario?: string;
   registradoPor: string;
   registradoEm: string;
 }

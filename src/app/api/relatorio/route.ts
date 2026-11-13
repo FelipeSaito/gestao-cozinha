@@ -89,6 +89,11 @@ export async function GET(request: NextRequest) {
       return {
         id: doc.id, origem, dataFeira: partes[1], feiraId: partes[2], saborId: partes[3],
         quantidade: dado.quantidade,
+        tipo: dado.tipo === "doacao" ? "doacao" : "descarte",
+        destinatario:
+          typeof dado.destinatario === "string"
+            ? dado.destinatario
+            : "",
         motivo: typeof dado.motivo === "string" ? dado.motivo : "",
         registradoPor: typeof dado.registradoPor === "string" ? dado.registradoPor : "",
         registradoEm: data.toISOString(),

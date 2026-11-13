@@ -47,3 +47,29 @@ export async function registrarDescarteFeira(
 ) {
   await requisitar("POST", { origem, quantidade, motivo, operacaoId });
 }
+
+export async function registrarBaixaSobraFeira(dados: {
+  origem: string;
+  quantidade: number;
+  tipo: "descarte" | "doacao";
+  motivo: string;
+  destinatario: string;
+  operacaoId: string;
+}): Promise<{ total: number }> {
+  const resultado = await requisitar("POST", dados);
+
+  if (
+    !resultado ||
+    typeof resultado !== "object" ||
+    !("total" in resultado) ||
+    typeof resultado.total !== "number" ||
+    !Number.isSafeInteger(resultado.total) ||
+    resultado.total < 0
+  ) {
+    throw new Error(
+      "Não foi possível confirmar o registro. Tente novamente sem alterar os campos.",
+    );
+  }
+
+  return { total: resultado.total };
+}
