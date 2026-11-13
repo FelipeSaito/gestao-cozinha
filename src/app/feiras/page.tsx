@@ -62,6 +62,9 @@ import {
   SABORES_CEREJEIRAS,
 } from "@/lib/planejamento-padrao-feiras";
 
+import { baixasFechamentoValidas } from "@/lib/faturamento-feira";
+import { nomeSabor } from "@/lib/nomesSabores";
+
 import styles from "./page.module.css";
 import { BaixaSobras } from "@/components/feiras/BaixaSobras";
 
@@ -704,11 +707,7 @@ function ConferenciaSaida({
 }
 
 function FechamentoFeira({
-  saida,
-  retorno,
-  nomeFeira,
-  minimoAlocado,
-  onConfirmar,
+  saida, retorno, nomeFeira, minimoAlocado, onConfirmar,
 }: {
   saida: RegistroSaida;
   retorno?: RegistroRetorno;
@@ -716,90 +715,127 @@ function FechamentoFeira({
   minimoAlocado: Record<string, number>;
   onConfirmar: (itens: ItemRetorno[], versao?: string) => Promise<void>;
 }) {
+  type Contagem = { sobras: string; cortesias: string; perdas: string; motivoCortesia: string; motivoPerda: string };
+  function valoresIniciais(): Record<string, Contagem> {
+    return Object.fromEntries(saida.itens.map((item) => {
+      const salvo = retorno?.itens.find((i) => i.saborId === item.saborId);
+      return [item.saborId, { sobras: salvo ? String(salvo.sobraram) : "",
+        cortesias: String(salvo?.cortesias ?? 0), perdas: String(salvo?.perdas ?? 0),
+        motivoCortesia: salvo?.motivoCortesia ?? "", motivoPerda: salvo?.motivoPerda ?? "" }];
+    }));
+  }
   const [editando, setEditando] = useState(!retorno);
   const [versaoEdicao, setVersaoEdicao] = useState(retorno?.registradoEm);
-  const [sobras, setSobras] = useState<Record<string, string>>(() =>
-    Object.fromEntries(saida.itens.map((item) => [item.saborId, ""])),
-  );
+  const [contagens, setContagens] = useState<Record<string, Contagem>>(valoresIniciais);
   const [erroRetorno, setErroRetorno] = useState("");
   const [salvandoRetorno, setSalvandoRetorno] = useState(false);
+  const emAndamento = useRef(false);
+  const estiloCampo = { width: 120, maxWidth: "100%", minHeight: 48, padding: 8,
+    border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 };
+  const estiloLabel = { display: "grid", gap: 4 };
+
+  function alterar(id: string, campo: keyof Contagem, valor: string) {
+    setContagens((atual) => ({ ...atual, [id]: { ...atual[id], [campo]: valor } }));
+    setErroRetorno("");
+  }
+  function numero(texto: string | undefined, opcional = false) {
+    if (texto === undefined || texto.trim() === "") return opcional ? 0 : NaN;
+    return Number(texto);
+  }
+  const itens: ItemRetorno[] = saida.itens.map((item) => {
+    const campos = contagens[item.saborId];
+    const cortesias = numero(campos?.cortesias, true);
+    const perdas = numero(campos?.perdas, true);
+    return { saborId: item.saborId, nome: item.nome, separados: item.separado,
+      sobraram: numero(campos?.sobras), guardados: numero(campos?.sobras), cortesias, perdas,
+      motivoCortesia: cortesias > 0 ? (campos?.motivoCortesia ?? "").trim() : "",
+      motivoPerda: perdas > 0 ? (campos?.motivoPerda ?? "").trim() : "" };
+  });
+  const quantidadesConferidas = itens.every((item) => [item.sobraram, item.cortesias ?? 0, item.perdas ?? 0]
+    .every((valor) => Number.isSafeInteger(valor) && valor >= 0) &&
+    item.sobraram + (item.cortesias ?? 0) + (item.perdas ?? 0) <= item.separados);
+  const resumo = (lista: ItemRetorno[]) => lista.reduce((total, item) => ({
+    saida: total.saida + item.separados, sobras: total.sobras + item.sobraram,
+    cortesias: total.cortesias + (item.cortesias ?? 0), perdas: total.perdas + (item.perdas ?? 0),
+    vendidos: total.vendidos + item.separados - item.sobraram - (item.cortesias ?? 0) - (item.perdas ?? 0),
+  }), { saida: 0, sobras: 0, cortesias: 0, perdas: 0, vendidos: 0 });
 
   async function confirmar() {
-    const itens = saida.itens.map((item) => ({
-      saborId: item.saborId,
-      nome: item.nome,
-      separados: item.separado,
-      sobraram: Number(sobras[item.saborId]),
-      guardados: Number(sobras[item.saborId]),
-    }));
-    if (itens.some((item) =>
-      sobras[item.saborId]?.trim() === "" ||
-      !Number.isSafeInteger(item.sobraram) ||
-      item.sobraram < 0 || item.sobraram > item.separados ||
-      item.sobraram < (minimoAlocado[item.saborId] ?? 0)
-    )) {
-      setErroRetorno("Confira as quantidades: as sobras não podem superar a saída nem ficar abaixo do que já foi destinado a outras feiras.");
+    if (emAndamento.current) return;
+    const invalido = itens.find((item) => !baixasFechamentoValidas(item) || item.sobraram < (minimoAlocado[item.saborId] ?? 0));
+    if (invalido) {
+      setErroRetorno(`Confira ${nomeSabor(invalido.nome)}: informe sobras, cortesias e perdas inteiras, sem ultrapassar a saída. As sobras devem cobrir o que já foi destinado. Justifique cortesias e perdas com 5 a 200 caracteres.`);
       return;
     }
+    emAndamento.current = true;
     setSalvandoRetorno(true);
     try {
       await onConfirmar(itens, versaoEdicao);
-      setErroRetorno("");
-      setEditando(false);
+      setErroRetorno(""); setEditando(false);
     } catch (erro) {
       setErroRetorno(erro instanceof Error ? erro.message : "Não foi possível salvar o fechamento.");
     } finally {
-      setSalvandoRetorno(false);
+      emAndamento.current = false; setSalvandoRetorno(false);
     }
   }
 
   if (retorno && !editando) {
-    const vendidos = retorno.itens.reduce((total, item) => total + item.separados - item.sobraram, 0);
-    const guardadosTotal = retorno.itens.reduce((total, item) => total + item.sobraram, 0);
-    return (
-      <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, background: "var(--color-info-light, #e7f0fa)", borderRadius: 12 }}>
-        <strong>Feira fechada · {vendidos} pastéis não retornaram · {guardadosTotal} guardados na geladeira</strong>
-        <small>Não retornaram = separados − sobras. Confira vendas e perdas fora desta tela.</small>
-        <span style={{ fontSize: 14 }}>Por {retorno.registradoPor} em {new Date(retorno.registradoEm).toLocaleString("pt-BR")}</span>
-        {retorno.itens.map((item) => (
-          <span key={item.saborId}>{item.nome}: {item.sobraram} sobraram e foram guardados</span>
-        ))}
-        {retorno.reaproveitado && <p>Este fechamento tem sobras destinadas a outra feira. Peça ao Dono para revisar os registros antes de corrigir.</p>}
-        <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
-          setSobras(Object.fromEntries(retorno.itens.map((item) => [item.saborId, String(item.sobraram)])));
-          setVersaoEdicao(retorno.registradoEm);
-          setErroRetorno("");
-          setEditando(true);
-        }}>Corrigir fechamento</Button>
-      </div>
-    );
+    const total = resumo(retorno.itens);
+    return <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, background: "var(--color-info-light, #e7f0fa)", borderRadius: 12 }}>
+      <strong>Feira fechada · {total.vendidos} vendidos · {total.sobras} guardados</strong>
+      <span>{total.saida} saíram · {total.cortesias} cortesias · {total.perdas} perdas durante a feira</span>
+      <small>Vendidos = saída − sobras − cortesias − perdas. Baixas posteriores das sobras são registradas em Descarte e doação.</small>
+      <span style={{ fontSize: 14 }}>Por {retorno.registradoPor} em {new Date(retorno.registradoEm).toLocaleString("pt-BR")}</span>
+      {retorno.itens.map((item) => <div key={item.saborId} style={{ display: "grid", gap: 4 }}>
+        <span><strong>{nomeSabor(item.nome)}</strong>: {item.sobraram} guardados · {item.cortesias ?? 0} cortesias · {item.perdas ?? 0} perdas · {item.separados - item.sobraram - (item.cortesias ?? 0) - (item.perdas ?? 0)} vendidos</span>
+        {(item.cortesias ?? 0) > 0 && <small>Motivo da cortesia: {item.motivoCortesia}</small>}
+        {(item.perdas ?? 0) > 0 && <small>Motivo da perda: {item.motivoPerda}</small>}
+      </div>)}
+      {retorno.reaproveitado && <p>Este fechamento tem sobras já destinadas. Peça ao Dono para revisar os registros antes de corrigir.</p>}
+      <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
+        setContagens(valoresIniciais()); setVersaoEdicao(retorno.registradoEm); setErroRetorno(""); setEditando(true);
+      }}>Corrigir fechamento</Button>
+    </div>;
   }
 
-  return (
-    <div style={{ display: "grid", gap: 14, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
-      <h5 style={{ fontSize: 16 }}>Fechamento de {nomeFeira}</h5>
-      <p>Conte os pastéis que voltaram. Todas as sobras serão guardadas na geladeira.</p>
-      {saida.itens.map((item) => (
-        <div key={item.saborId} style={{ display: "grid", gap: 10, paddingBlock: 10, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
-          <strong>{item.nome} · {item.separado} saíram</strong>
+  const total = quantidadesConferidas ? resumo(itens) : null;
+  return <div style={{ display: "grid", gap: 14, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
+    <h5 style={{ fontSize: 16 }}>Fechamento de {nomeFeira}</h5>
+    <p>Conte o que voltou e será guardado. Registre separadamente pastéis oferecidos de cortesia e perdas ocorridas durante esta feira. Não inclua baixas de sobras guardadas de outras feiras.</p>
+    <fieldset disabled={salvandoRetorno} style={{ display: "grid", gap: 14, border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <legend style={{ fontWeight: 700 }}>Contagem por sabor</legend>
+      {saida.itens.map((item) => {
+        const campos = contagens[item.saborId];
+        const contagem = itens.find((i) => i.saborId === item.saborId)!;
+        const valido = [contagem.sobraram, contagem.cortesias ?? 0, contagem.perdas ?? 0].every((q) => Number.isSafeInteger(q) && q >= 0) &&
+          contagem.sobraram + (contagem.cortesias ?? 0) + (contagem.perdas ?? 0) <= item.separado;
+        return <div key={item.saborId} style={{ display: "grid", gap: 10, paddingBlock: 10, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
+          <strong>{nomeSabor(item.nome)} · {item.separado} saíram</strong>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-            <label style={{ display: "grid", gap: 4 }}>Sobraram
-              <input type="number" min={0} max={item.separado} step={1} inputMode="numeric"
-                value={sobras[item.saborId] ?? ""}
-                placeholder="Digite a sobra"
-                onChange={(event) => { setSobras((atual) => ({ ...atual, [item.saborId]: event.target.value })); setErroRetorno(""); }}
-                style={{ width: 110, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
-            </label>
+            <label style={estiloLabel}>Sobraram para guardar<input aria-label={`Sobras de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.sobras ?? ""} placeholder="Digite a sobra" onChange={(e) => alterar(item.saborId, "sobras", e.target.value)} style={estiloCampo} /></label>
+            <label style={estiloLabel}>Cortesias<input aria-label={`Cortesias de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.cortesias ?? "0"} onChange={(e) => alterar(item.saborId, "cortesias", e.target.value)} style={estiloCampo} /></label>
+            <label style={estiloLabel}>Perdas na feira<input aria-label={`Perdas de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.perdas ?? "0"} onChange={(e) => alterar(item.saborId, "perdas", e.target.value)} style={estiloCampo} /></label>
           </div>
-        </div>
-      ))}
+          {numero(campos?.cortesias, true) > 0 && <label style={estiloLabel}>Motivo da cortesia (5 a 200 caracteres)
+            <textarea value={campos?.motivoCortesia ?? ""} maxLength={200} rows={2} onChange={(e) => alterar(item.saborId, "motivoCortesia", e.target.value)} style={{ ...estiloCampo, width: "100%" }} /></label>}
+          {numero(campos?.perdas, true) > 0 && <label style={estiloLabel}>Motivo da perda (5 a 200 caracteres)
+            <textarea value={campos?.motivoPerda ?? ""} maxLength={200} rows={2} onChange={(e) => alterar(item.saborId, "motivoPerda", e.target.value)} style={{ ...estiloCampo, width: "100%" }} /></label>}
+          <small>{valido ? `Vendidos: ${item.separado - contagem.sobraram - (contagem.cortesias ?? 0) - (contagem.perdas ?? 0)}` : "Preencha a contagem; a soma não pode superar a saída."}</small>
+        </div>;
+      })}
+      <div role="status" aria-live="polite">{total
+        ? `${total.saida} saíram · ${total.sobras} voltaram · ${total.cortesias} cortesias · ${total.perdas} perdas · ${total.vendidos} vendidos`
+        : "Preencha as sobras de todos os sabores para conferir o resumo."}</div>
       {erroRetorno && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erroRetorno}</p>}
       <Button type="button" variant="primary" disabled={salvandoRetorno} onClick={confirmar}>
         {salvandoRetorno ? "Salvando..." : "Confirmar fechamento"}
       </Button>
       {retorno && <Button type="button" variant="secondary" onClick={() => setEditando(false)}>Cancelar correção</Button>}
-    </div>
-  );
+    </fieldset>
+  </div>;
 }
 
 export default function FeirasPage() {
