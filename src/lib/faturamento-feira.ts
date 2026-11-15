@@ -313,10 +313,32 @@ export function calcularFaturamentoSaida(
   return total;
 }
 
+/** Compatível com fechamentos antigos: campos ausentes significam zero. */
+export function baixasFechamentoValidas(item: {
+  separados: unknown; sobraram: unknown; cortesias?: unknown; perdas?: unknown;
+  motivoCortesia?: unknown; motivoPerda?: unknown;
+}): boolean {
+  const cortesia = item.cortesias === undefined ? 0 : item.cortesias;
+  const perda = item.perdas === undefined ? 0 : item.perdas;
+  const motivoValido = (quantidade: unknown, motivo: unknown) =>
+    (motivo === undefined || (typeof motivo === "string" && motivo.trim().length <= 200)) &&
+    (quantidade === 0 || (typeof motivo === "string" && motivo.trim().length >= 5));
+  return typeof item.separados === "number" && Number.isSafeInteger(item.separados) && item.separados >= 0 &&
+    typeof item.sobraram === "number" && Number.isSafeInteger(item.sobraram) && item.sobraram >= 0 &&
+    typeof cortesia === "number" && Number.isSafeInteger(cortesia) && cortesia >= 0 &&
+    typeof perda === "number" && Number.isSafeInteger(perda) && perda >= 0 &&
+    Number.isSafeInteger(item.sobraram + cortesia + perda) &&
+    item.sobraram + cortesia + perda <= item.separados &&
+    motivoValido(cortesia, item.motivoCortesia) && motivoValido(perda, item.motivoPerda);
+}
+
 export type ItemVendaCalculada = {
   saborId: string;
   nome: string;
   quantidade: number;
+  sobraram: number;
+  cortesias: number;
+  perdas: number;
 };
 
 /** Confere cada sabor da saída com o fechamento; ausência não significa sobra zero. */
@@ -344,9 +366,14 @@ export function calcularItensVendidos(
     vistos.add(item.saborId);
     const fechamento = fechados.get(item.saborId);
     if (!fechamento || fechamento.separados !== item.separado ||
-        typeof fechamento.sobraram !== "number" || !Number.isSafeInteger(fechamento.sobraram) ||
-        fechamento.sobraram < 0 || fechamento.sobraram > item.separado) return null;
-    vendidos.push({ saborId: item.saborId, nome: item.nome, quantidade: item.separado - fechamento.sobraram });
+        !baixasFechamentoValidas({ separados: fechamento.separados, sobraram: fechamento.sobraram,
+          cortesias: fechamento.cortesias, perdas: fechamento.perdas,
+          motivoCortesia: fechamento.motivoCortesia, motivoPerda: fechamento.motivoPerda })) return null;
+    const sobraram = fechamento.sobraram as number;
+    const cortesias = (fechamento.cortesias ?? 0) as number;
+    const perdas = (fechamento.perdas ?? 0) as number;
+    vendidos.push({ saborId: item.saborId, nome: item.nome, sobraram, cortesias, perdas,
+      quantidade: item.separado - sobraram - cortesias - perdas });
   }
   return vendidos;
 }

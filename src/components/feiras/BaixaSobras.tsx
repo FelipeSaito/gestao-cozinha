@@ -40,12 +40,14 @@ export function BaixaSobras({
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
   const [sucesso, setSucesso] = useState("");
+
   const [confirmacao, setConfirmacao] = useState<{
     origem: string;
     total: number;
   } | null>(null);
 
   const emAndamento = useRef(false);
+
   const tentativa = useRef<{
     assinatura: string;
     id: string;
@@ -55,10 +57,10 @@ export function BaixaSobras({
 
   const aguardandoSaldo = Boolean(
     confirmacao &&
-    (
-      !sincronizado ||
-      (baixas[confirmacao.origem] ?? 0) < confirmacao.total
-    ),
+      (
+        !sincronizado ||
+        (baixas[confirmacao.origem] ?? 0) < confirmacao.total
+      ),
   );
 
   async function salvar() {
@@ -127,7 +129,11 @@ export function BaixaSobras({
         operacaoId: tentativa.current.id,
       });
 
-      setConfirmacao({ origem, total: resultado.total });
+      setConfirmacao({
+        origem,
+        total: resultado.total,
+      });
+
       setSucesso(
         `${tipo === "doacao" ? "Doação" : "Descarte"} registrado: ${numero} pastéis.`,
       );
@@ -142,6 +148,7 @@ export function BaixaSobras({
           ? falha.message
           : "Não foi possível registrar.",
       );
+
       // Mantém o mesmo ID ao repetir a mesma solicitação.
     } finally {
       emAndamento.current = false;
@@ -159,12 +166,13 @@ export function BaixaSobras({
       }}
     >
       <summary style={{ cursor: "pointer", minHeight: 44 }}>
-        <strong>Descarte e doação</strong>
+        <strong>Destinar sobras</strong>
       </summary>
 
       <p>
-        Registre a retirada de sobras disponíveis. Descartes e doações
-        não são vendas.
+        Registre o descarte ou a doação dos pastéis que voltaram da feira.
+        A quantidade será descontada das sobras disponíveis para
+        reaproveitamento.
       </p>
 
       {!sincronizado && (
@@ -197,6 +205,7 @@ export function BaixaSobras({
               required
             >
               <option value="">Selecione a feira e o sabor</option>
+
               {lotes.map((item) => (
                 <option key={item.origem} value={item.origem}>
                   {item.nome} — {item.disponivel} disponíveis
@@ -206,7 +215,7 @@ export function BaixaSobras({
           </label>
 
           <label>
-            Tipo
+            Tipo de destino
             <select
               style={campo}
               value={tipo}
@@ -267,7 +276,11 @@ export function BaixaSobras({
 
           <button
             type="submit"
-            style={{ ...campo, cursor: "pointer", fontWeight: 700 }}
+            style={{
+              ...campo,
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
             disabled={!lote || lote.disponivel <= 0}
           >
             {salvando
@@ -282,6 +295,7 @@ export function BaixaSobras({
       {aguardandoSaldo && (
         <p role="status">Registro salvo. Atualizando o saldo...</p>
       )}
+
       {sucesso && <p role="status">{sucesso}</p>}
       {erro && <p role="alert">{erro}</p>}
     </details>

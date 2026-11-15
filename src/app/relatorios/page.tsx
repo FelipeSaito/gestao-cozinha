@@ -429,23 +429,33 @@ function DetalhesCalculoFaturamento({ registro, saidas, retornos }: {
       Ver cálculo
     </summary>
     {registro.centavos === null ? <p>Não foi possível conferir a saída com o fechamento. Revise os registros desta feira.</p> : <>
-      <p>{fechado ? "Vendas calculadas: saída menos sobras de cada sabor." : "Previsão: quantidade da saída, pois ainda não há fechamento."}</p>
+      <p>{fechado ? "Vendas calculadas: saída menos sobras, cortesias e perdas de cada sabor." : "Previsão: quantidade da saída, pois ainda não há fechamento."}</p>
       <table className={styles.chartTable}>
         <thead><tr><th scope="col">Sabor</th><th scope="col">Saiu</th><th scope="col">Voltou</th>
-          <th scope="col">{fechado ? "Vendeu" : "Previsto"}</th><th scope="col">Preço unitário</th><th scope="col">Subtotal</th></tr></thead>
+          <th scope="col">Cortesias</th><th scope="col">Perdas</th><th scope="col">{fechado ? "Vendeu" : "Previsto"}</th><th scope="col">Preço unitário</th><th scope="col">Subtotal</th></tr></thead>
         <tbody>{itens.map((item) => {
           const retorno = retornos[registro.chave]?.itens.find((valor) => valor.saborId === item.saborId);
           const vendido = registro.itensVendidos?.find((valor) => valor.saborId === item.saborId);
           const quantidade = fechado ? vendido?.quantidade : item.separado;
           const preco = precoVendaCentavos(item, { ...registro, precosVenda: saidas[registro.chave]?.precosVenda });
           return <tr key={item.saborId}><th scope="row">{nomeSabor(item.nome)}</th><td>{item.separado}</td>
-            <td>{fechado ? retorno?.sobraram ?? "—" : "—"}</td><td>{quantidade ?? "—"}</td>
+            <td>{fechado ? retorno?.sobraram ?? "—" : "—"}</td>
+            <td>{fechado ? retorno?.cortesias ?? 0 : "—"}</td><td>{fechado ? retorno?.perdas ?? 0 : "—"}</td><td>{quantidade ?? "—"}</td>
             <td>{formatarFaturamento(preco)}</td><td>{quantidade === undefined ? "—" : formatarFaturamento(quantidade * preco)}</td></tr>;
         })}</tbody>
-        <tfoot><tr><th scope="row" colSpan={5}>Total {fechado ? "das vendas calculadas" : "previsto"}</th>
+        <tfoot><tr><th scope="row" colSpan={7}>Total {fechado ? "das vendas calculadas" : "previsto"}</th>
           <td>{formatarFaturamento(registro.centavos)}</td></tr></tfoot>
       </table>
-      <p className={styles.note}>Preços da feira na data indicada. Descontos, cortesias e perdas durante a feira não estão incluídos.</p>
+      {fechado && retornos[registro.chave]?.itens.some((item) => (item.cortesias ?? 0) > 0 || (item.perdas ?? 0) > 0) && (
+        <details><summary>Justificativas de cortesias e perdas</summary>
+          <ul>{retornos[registro.chave].itens.filter((item) => (item.cortesias ?? 0) > 0 || (item.perdas ?? 0) > 0).map((item) => (
+            <li key={item.saborId}><strong>{nomeSabor(item.nome)}</strong>
+              {(item.cortesias ?? 0) > 0 && <p>Cortesias: {item.cortesias} · {item.motivoCortesia}</p>}
+              {(item.perdas ?? 0) > 0 && <p>Perdas: {item.perdas} · {item.motivoPerda}</p>}
+            </li>))}</ul>
+        </details>
+      )}
+      <p className={styles.note}>Preços da feira na data indicada. Cortesias e perdas registradas no fechamento são descontadas das vendas. Descontos monetários não estão incluídos. Campos ausentes em fechamentos antigos são considerados zero.</p>
     </>}
   </details>;
 }
@@ -468,7 +478,7 @@ function locaisComparaveis(registros: RegistroPrevisao[]) {
 }
 
 type SaborRanking = {
-  id: string; nome: string; saidas: number; sobras: number; vendidos: number; edicoes: number;
+  id: string; nome: string; saidas: number; sobras: number; vendidos: number; cortesias: number; perdas: number; edicoes: number;
 };
 
 function calcularRankingSabores(linhas: Linha[], saidas: Saidas, retornos: Retornos) {
@@ -487,10 +497,12 @@ function calcularRankingSabores(linhas: Linha[], saidas: Saidas, retornos: Retor
       const separado = saida.itens.find((valor) => valor.saborId === item.saborId)!.separado;
       if (separado === 0) continue;
       const id = normalizar(item.nome) || item.saborId;
-      const sabor = sabores.get(id) ?? { id, nome: nomeSabor(item.nome), saidas: 0, sobras: 0, vendidos: 0, edicoes: 0 };
+      const sabor = sabores.get(id) ?? { id, nome: nomeSabor(item.nome), saidas: 0, sobras: 0, vendidos: 0, cortesias: 0, perdas: 0, edicoes: 0 };
       sabor.saidas += separado;
       sabor.vendidos += item.quantidade;
-      sabor.sobras += separado - item.quantidade;
+      sabor.sobras += item.sobraram;
+      sabor.cortesias += item.cortesias;
+      sabor.perdas += item.perdas;
       if (!nestaEdicao.has(id)) { sabor.edicoes++; nestaEdicao.add(id); }
       sabores.set(id, sabor);
     }
@@ -544,14 +556,14 @@ function RankingSaboresFeira({ linhas, saidas, retornos }: {
         </div>
         <div className={styles.tableScroll} tabIndex={0} role="region" aria-label={`Ranking de sabores de ${local.nome}`}>
           <table className={styles.chartTable}><thead><tr><th scope="col">Posição</th><th scope="col">Sabor</th>
-            <th scope="col">Edições com saída</th><th scope="col">Saiu</th><th scope="col">Vendeu</th><th scope="col">Voltou</th><th scope="col">Sobra (%)</th></tr></thead>
+            <th scope="col">Edições com saída</th><th scope="col">Saiu</th><th scope="col">Vendeu</th><th scope="col">Voltou</th><th scope="col">Cortesias</th><th scope="col">Perdas</th><th scope="col">Sobra (%)</th></tr></thead>
             <tbody>{ordenados.map((item, indice) => <tr key={item.id}><td>{indice + 1}</td><th scope="row">{item.nome}</th>
-              <td>{item.edicoes}</td><td>{item.saidas}</td><td>{item.vendidos}</td><td>{item.sobras}</td>
+              <td>{item.edicoes}</td><td>{item.saidas}</td><td>{item.vendidos}</td><td>{item.sobras}</td><td>{item.cortesias}</td><td>{item.perdas}</td>
               <td>{taxa(item).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</td></tr>)}</tbody>
           </table>
         </div>
       </>}
-      <p className={styles.note}>Percentual de sobra = total que voltou ÷ total que saiu × 100. São consideradas apenas as edições fechadas deste cadastro, dentro dos filtros de período e local. Sabores sem saída não entram no ranking. Confira o número de edições antes de ajustar o planejamento. As sobras representam o retorno original, mesmo quando reaproveitado, doado ou descartado depois.</p>
+      <p className={styles.note}>Percentual de sobra = total que voltou ÷ total que saiu × 100. São consideradas apenas as edições fechadas deste cadastro, dentro dos filtros de período e local. Sabores sem saída não entram no ranking. Confira o número de edições antes de ajustar o planejamento. Cortesias e perdas na feira ficam em colunas separadas, sem aumentar as sobras. As sobras representam o retorno original, mesmo quando reaproveitado, doado ou descartado depois.</p>
     </>}
   </section>;
 }
@@ -639,7 +651,7 @@ function ComparacaoFaturamento({ registros, saidas }: { registros: RegistroPrevi
               previsao: comparada.baseCalculo === "previsao" ? comparada.centavos / 100 : null } },
           ]} series={SERIES_FATURAMENTO} moeda vazio="Selecione duas datas." />
           <details className={styles.chartData}>
-            <summary>Ver quantidades por sabor</summary><p className={styles.note}>Nas datas fechadas, são mostradas as quantidades vendidas (saída menos sobras). Nas demais, são mostradas as quantidades da saída. Confira a base de cada data antes de comparar.</p>
+            <summary>Ver quantidades por sabor</summary><p className={styles.note}>Nas datas fechadas, são mostradas as quantidades vendidas (saída menos sobras, cortesias e perdas). Nas demais, são mostradas as quantidades da saída. Confira a base de cada data antes de comparar.</p>
             <div className={styles.tableScroll} tabIndex={0} role="region" aria-label="Comparação das saídas por sabor">
               <table className={styles.chartTable}>
                 <thead><tr><th scope="col">Sabor</th><th scope="col">{formatarData(base.data)}</th><th scope="col">{formatarData(comparada.data)}</th><th scope="col">Diferença</th></tr></thead>
@@ -1431,8 +1443,11 @@ function RelatoriosConteudo() {
       return { centavos: validos.length ? validos.reduce((total, item) => total + (item.centavos ?? 0), 0) : null,
         quantidade: registros.length, invalidos: registros.length - validos.length };
     };
+    const itensFechados = faturamento.registros.flatMap((item) => item.itensVendidos ?? []);
     return { vendas: somar("fechamento"), previsao: somar("previsao"),
-      feiras: somar("fechamento", "feira"), eventos: somar("fechamento", "evento") };
+      feiras: somar("fechamento", "feira"), eventos: somar("fechamento", "evento"),
+      cortesias: itensFechados.reduce((total, item) => total + item.cortesias, 0),
+      perdasNaFeira: itensFechados.reduce((total, item) => total + item.perdas, 0) };
   }, [faturamento]);
 
   function exportarFaturamento() {
@@ -1915,7 +1930,7 @@ function RelatoriosConteudo() {
                 <section className={styles.panel} aria-labelledby="resumo-faturamento">
                   <div className={styles.heading}>
                     <div><h2 id="resumo-faturamento">Faturamento · feiras e eventos</h2>
-                      <p>Com fechamento: saída menos sobras por sabor × preço da feira na data. Sem fechamento: previsão pela saída. Feiras e eventos ficam separados e também compõem o total geral.</p></div>
+                      <p>Com fechamento: (saída − sobras − cortesias − perdas) por sabor × preço da feira na data. Sem fechamento: previsão pela saída. Feiras e eventos ficam separados e também compõem o total geral.</p></div>
                     <Button type="button" variant="secondary" onClick={exportarFaturamento}
                       disabled={!faturamento.registros.length}>Exportar faturamento CSV</Button>
                   </div>
@@ -1933,7 +1948,7 @@ function RelatoriosConteudo() {
                     ? "Total parcial: há saídas ou fechamentos com dados inválidos. Esses registros não são tratados como zero."
                     : faturamento.saidas === 0 ? "Confirme a saída de uma feira para preencher os gráficos automaticamente."
                     : "Todas as saídas conferidas deste filtro foram calculadas."}
-                    {" "}Feiras sem saída conferida não entram na soma. Preços por feira e data: o reajuste vale a partir de 10/11/2026; datas anteriores mantêm os preços antigos. Os cards separam as vendas calculadas das previsões. Nos gráficos, verde representa vendas calculadas e laranja representa previsões, em séries separadas. O cálculo pressupõe que saída menos sobras corresponde às vendas; não considera descontos, cortesias ou perdas durante a feira e não representa caixa conferido nem lucro. Descartes e doações das sobras após o fechamento não são vendas.</p>
+                    {" "}Feiras sem saída conferida não entram na soma. Preços por feira e data: o reajuste vale a partir de 10/11/2026; datas anteriores mantêm os preços antigos. Os cards separam as vendas calculadas das previsões. Nos gráficos, verde representa vendas calculadas e laranja representa previsões, em séries separadas. O cálculo desconta sobras, cortesias e perdas informadas no fechamento. Registros antigos sem os novos campos consideram zero. Não inclui descontos monetários e não representa caixa conferido nem lucro. Descartes e doações das sobras após o fechamento não são vendas.</p>
                 </section>
 
                 <p className={styles.note}>Fechadas: {faturamento.fechadas} · Ainda em previsão: {faturamento.previstas}. Registros inválidos ficam fora da soma.</p>
@@ -1956,6 +1971,8 @@ function RelatoriosConteudo() {
                 </section>
 
                 <section className={styles.secondaryKpis} aria-label="Sobras, perdas e custos">
+                  <div><span>Cortesias durante as feiras</span><strong>{numeroGrafico(resumoValores.cortesias)} <small>pastéis</small></strong><p>Fechamentos válidos no período e local selecionados</p></div>
+                  <div><span>Perdas durante as feiras</span><strong>{numeroGrafico(resumoValores.perdasNaFeira)} <small>pastéis</small></strong><p>Separadas dos descartes posteriores de sobras</p></div>
                   <div><span>Sobras registradas</span><strong>{numeroGrafico(totais.sobras)} <small>pastéis</small></strong><p>Retornos das feiras no período</p></div>
                   <div><span>Descartes confirmados</span><strong>{descartesDisponiveis ? numeroGrafico(perdasConfirmadas) : "—"} <small>pastéis</small></strong><p>Pela data do descarte registrado</p></div>
                   <div><span>Doações confirmadas</span><strong>{descartesDisponiveis ? numeroGrafico(doacoesConfirmadas) : "—"} <small>pastéis</small></strong><p>Pela data da doação registrada</p></div>

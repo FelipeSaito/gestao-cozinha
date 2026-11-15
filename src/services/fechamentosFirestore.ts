@@ -6,7 +6,7 @@ import {
   serverTimestamp, waitForPendingWrites, type Unsubscribe,
 } from "firebase/firestore";
 import { firebaseClient } from "@/lib/firebase";
-import { faturamentoValido } from "@/lib/faturamento-feira";
+import { baixasFechamentoValidas, faturamentoValido } from "@/lib/faturamento-feira";
 import type { ItemSaida } from "@/services/saidasFirestore";
 
 export interface ItemRetorno {
@@ -15,6 +15,10 @@ export interface ItemRetorno {
   separados: number;
   sobraram: number;
   guardados: number;
+  cortesias?: number;
+  perdas?: number;
+  motivoCortesia?: string;
+  motivoPerda?: string;
 }
 
 export interface RegistroRetorno {
@@ -22,7 +26,6 @@ export interface RegistroRetorno {
   registradoEm: string;
   registradoPor: string;
   reaproveitado?: boolean;
-  /** Ausente nos registros antigos ou quando o valor não foi informado. */
   faturamentoCentavos?: number;
 }
 
@@ -30,14 +33,14 @@ export type Retornos = Record<string, RegistroRetorno>;
 const CHAVE = /^\d{4}-\d{2}-\d{2}:[a-z0-9-]+$/;
 
 function itemValido(valor: unknown): valor is ItemRetorno {
-  if (!valor || typeof valor !== "object") return false;
+  if (!valor || typeof valor !== "object" || Array.isArray(valor)) return false;
   const item = valor as Record<string, unknown>;
   return typeof item.saborId === "string" && item.saborId.length > 0 &&
     typeof item.nome === "string" && item.nome.trim().length > 0 &&
-    typeof item.separados === "number" && Number.isSafeInteger(item.separados) && item.separados >= 0 &&
-    typeof item.sobraram === "number" && Number.isSafeInteger(item.sobraram) &&
-    item.sobraram >= 0 && item.sobraram <= item.separados &&
-    item.guardados === item.sobraram;
+    item.guardados === item.sobraram &&
+    baixasFechamentoValidas({ separados: item.separados, sobraram: item.sobraram,
+      cortesias: item.cortesias, perdas: item.perdas,
+      motivoCortesia: item.motivoCortesia, motivoPerda: item.motivoPerda });
 }
 
 export function escutarFechamentos(
@@ -47,8 +50,7 @@ export function escutarFechamentos(
   const { auth, db } = firebaseClient();
   let pararDados: Unsubscribe | undefined;
   const pararAuth = onAuthStateChanged(auth, (usuario) => {
-    pararDados?.();
-    pararDados = undefined;
+    pararDados?.(); pararDados = undefined;
     if (!usuario) {
       falhar(new Error("Entre com sua conta para consultar os fechamentos."));
       return;
@@ -59,23 +61,27 @@ export function escutarFechamentos(
           falhar(new Error("Sem conexão com o Firestore. Os fechamentos podem estar desatualizados."));
           return;
         }
+        if (snapshot.metadata.hasPendingWrites) return;
         const proximos: Retornos = {};
-        snapshot.forEach((documento) => {
+        for (const documento of snapshot.docs) {
           const dados = documento.data();
           const data = dados.registradoEm?.toDate?.();
-          if (CHAVE.test(documento.id) && Array.isArray(dados.itens) &&
-            dados.itens.every(itemValido) && data instanceof Date &&
-            typeof dados.registradoPor === "string") {
-            proximos[documento.id] = {
-              itens: dados.itens,
-              registradoEm: data.toISOString(),
-              registradoPor: dados.registradoPor,
-              reaproveitado: dados.reaproveitado === true,
-              ...(faturamentoValido(dados.faturamentoCentavos)
-                ? { faturamentoCentavos: dados.faturamentoCentavos } : {}),
-            };
+          if (!CHAVE.test(documento.id) || !Array.isArray(dados.itens) ||
+            dados.itens.length === 0 || dados.itens.length > 40 || !dados.itens.every(itemValido) ||
+            new Set(dados.itens.map((item: ItemRetorno) => item.saborId)).size !== dados.itens.length ||
+            !(data instanceof Date) || !Number.isFinite(data.getTime()) ||
+            typeof dados.registradoPor !== "string") {
+            falhar(new Error(`Fechamento inválido: ${documento.id}. Revise as contagens antes de calcular as vendas.`));
+            return;
           }
-        });
+          proximos[documento.id] = {
+            itens: dados.itens,
+            registradoEm: data.toISOString(),
+            registradoPor: dados.registradoPor,
+            reaproveitado: dados.reaproveitado === true,
+            ...(faturamentoValido(dados.faturamentoCentavos) ? { faturamentoCentavos: dados.faturamentoCentavos } : {}),
+          };
+        }
         receber(proximos);
       }, falhar);
   }, falhar);
@@ -88,21 +94,18 @@ async function registrar(
 ) {
   if (!CHAVE.test(chave) || itens.length === 0 || itens.length > 40 ||
     !itens.every(itemValido) || new Set(itens.map((i) => i.saborId)).size !== itens.length) {
-    throw new Error("Confira os sabores e as sobras antes de confirmar.");
+    throw new Error("Confira as quantidades. Sobras, cortesias e perdas juntas não podem superar a saída. Justifique as cortesias e perdas com 5 a 200 caracteres.");
   }
-  if (faturamentoCentavos != null && !faturamentoValido(faturamentoCentavos)) {
-    throw new Error("Faturamento inválido. Informe um valor em centavos inteiros, positivo ou zero.");
-  }
+  if (faturamentoCentavos != null && !faturamentoValido(faturamentoCentavos)) throw new Error("Faturamento inválido.");
   if (original?.faturamentoCentavos !== undefined && !faturamentoValido(original.faturamentoCentavos)) {
-    throw new Error("O registro antigo tem um faturamento inválido. Revise antes de importar.");
+    throw new Error("O registro antigo tem um faturamento inválido.");
   }
   const { auth, db } = firebaseClient();
   const usuario = auth.currentUser;
   if (!usuario) throw new Error("Entre com sua conta para fechar a feira.");
   const perfil = (await getDoc(doc(db, "perfis", usuario.uid))).data();
-  const perfis = Array.isArray(perfil?.perfis) ? perfil.perfis : [perfil?.perfil];
-  if (original ? !perfis.includes("dono") :
-    !perfis.includes("dono") && !perfis.includes("feirantes")) {
+  const perfis = [perfil?.perfil, ...(Array.isArray(perfil?.perfis) ? perfil.perfis : [])];
+  if (original ? !perfis.includes("dono") : !perfis.includes("dono") && !perfis.includes("feirantes")) {
     throw new Error("Seu perfil não pode registrar este fechamento.");
   }
   const separador = chave.indexOf(":");
@@ -121,27 +124,28 @@ async function registrar(
     }
     const saidaItens = saida.data().itens as ItemSaida[];
     if (!Array.isArray(saidaItens) || saidaItens.length !== itens.length ||
-      itens.some((item) => !saidaItens.some((s) =>
-        s.saborId === item.saborId && s.nome === item.nome && s.separado === item.separados))) {
+      new Set(saidaItens.map((item) => item.saborId)).size !== saidaItens.length ||
+      itens.some((item) => !saidaItens.some((s) => s.saborId === item.saborId && s.nome === item.nome && s.separado === item.separados))) {
       throw new Error("A saída foi alterada. Reabra a contagem e confira os valores.");
     }
-    // Chamadas antigas sem o quarto argumento preservam o faturamento remoto.
-    // null significa explicitamente não informado; zero continua sendo um valor válido.
+    // Mesma ordem da saída para permitir a conferência também nas regras do Firestore.
+    const itensOrdenados = saidaItens.map((s) => {
+      const item = itens.find((i) => i.saborId === s.saborId)!;
+      return { saborId: item.saborId, nome: item.nome, separados: item.separados,
+        sobraram: item.sobraram, guardados: item.sobraram,
+        cortesias: item.cortesias ?? 0, perdas: item.perdas ?? 0,
+        motivoCortesia: (item.motivoCortesia ?? "").trim(), motivoPerda: (item.motivoPerda ?? "").trim() };
+    });
     const valor = faturamentoCentavos === undefined
-      ? (original?.faturamentoCentavos ?? fechamento.data()?.faturamentoCentavos)
-      : faturamentoCentavos;
-    const registro = {
-      data: chave.slice(0, separador),
-      feiraId: chave.slice(separador + 1),
-      itens,
-      saidaConferidaEm: saida.data().conferidoEm,
+      ? (original?.faturamentoCentavos ?? fechamento.data()?.faturamentoCentavos) : faturamentoCentavos;
+    transacao.set(fechamentoRef, {
+      data: chave.slice(0, separador), feiraId: chave.slice(separador + 1),
+      itens: itensOrdenados, saidaConferidaEm: saida.data().conferidoEm,
       registradoPor: original?.registradoPor || perfil?.nome || "Funcionário",
-      registradoPorId: usuario.uid,
-      registradoEm: serverTimestamp(),
+      registradoPorId: usuario.uid, registradoEm: serverTimestamp(),
       ...(faturamentoValido(valor) ? { faturamentoCentavos: valor } : {}),
       ...(original ? { dataOriginal: original.registradoEm, importadoPorId: usuario.uid } : {}),
-    };
-    transacao.set(fechamentoRef, registro);
+    });
     return true;
   });
   if (criado) await waitForPendingWrites(db);
