@@ -1,828 +1,1980 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { collection, onSnapshot } from "firebase/firestore";
+import { firebaseClient } from "@/lib/firebase";
 import {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
-import Link from "next/link";
-
-import {
-  ArrowLeft,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  MapPin,
+  Users,
 } from "lucide-react";
 
 import { AppLayout } from "@/components/layout/AppLayout";
+import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/contexts/AuthContext";
-
 import {
   escutarPlanejamentos,
+  importarPlanejamentoLocal,
+  salvarPlanejamentoFirestore,
   type Planejamentos,
+  type SaborPlanejado,
 } from "@/services/planejamentosFirestore";
+import {
+  escutarSaidas,
+  importarSaidaLocal,
+  salvarSaidaFirestore,
+  type ItemSaida,
+  type RegistroSaida,
+  type Saidas,
+} from "@/services/saidasFirestore";
+import {
+  escutarFechamentos,
+  importarFechamentoLocal,
+  salvarFechamentoFirestore,
+  type ItemRetorno,
+  type RegistroRetorno,
+  type Retornos,
+} from "@/services/fechamentosFirestore";
+import {
+  escutarReaproveitamentos,
+  salvarReaproveitamentoFirestore,
+  type Reaproveitamentos,
+} from "@/services/reaproveitamentosFirestore";
+import {
+  escutarProducaoFeiras,
+  salvarProducaoFeira,
+  type ProducoesFeira,
+  type RegistroProducao,
+} from "@/services/producaoFeirasFirestore";
 
 import {
-  feirasExtrasNaData,
   useFeirasCadastradas,
+  feirasExtrasNaData,
 } from "@/services/useFeirasCadastradas";
+import type { FeiraCadastrada } from "@/services/feirasCadastradas";
 
 import {
-  chaveSabor,
-  nomeSabor,
-} from "@/lib/nomesSabores";
+  padraoDaFeira,
+  temPadraoCompleto,
+  SABORES_CEREJEIRAS,
+} from "@/lib/planejamento-padrao-feiras";
 
-import { padraoDaFeira } from "@/lib/planejamento-padrao-feiras";
+import { baixasFechamentoValidas } from "@/lib/faturamento-feira";
+import { nomeSabor } from "@/lib/nomesSabores";
 
 import styles from "./page.module.css";
+import { BaixaSobras } from "@/components/feiras/BaixaSobras";
 
-/* Padrões compartilhados entre o planejamento do Dono e a comparação da produção. */
-const FEIRAS:
-  Record<string, string> = {
-  "jardim-independencia":
-    "Jardim Independência",
-  cerejeira: "Cerejeiras",
-  "reserva-terca":
-    "Reserva da Serra (terça)",
-  cenarios: "Cenários",
-  bela: "Bela",
-  laranjeira: "Laranjeira",
-  macedonia: "Macedônia",
-  "santa-clara":
-    "Santa Clara",
-  castanheira: "Castanheira",
-  "reserva-sexta":
-    "Reserva da Serra (sexta)",
-  "embu-das-artes":
-    "Embu das Artes",
-};
-
-interface FeiraDoDia {
+interface FeiraProgramada {
   id: string;
   nome: string;
   responsaveis: string[];
+  turno?: string;
 }
 
-interface LinhaProducao {
-  id: string;
-  nome: string;
-  padrao: number | null;
-  previsto: number;
+const STORAGE_KEY = "gestao-cozinha-feiras-planejamento-v1";
+
+function chaveDaSobra(chaveOrigem: string, saborId: string) {
+  return `${chaveOrigem}|${saborId}`;
 }
 
-function hojeBrasil(): string {
-  const partes =
-    new Intl.DateTimeFormat(
-      "en-US",
-      {
-        timeZone:
-          "America/Sao_Paulo",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      },
-    ).formatToParts(
-      new Date(),
-    );
-
-  const ler = (
-    tipo: string,
-  ) =>
-    partes.find(
-      (parte) =>
-        parte.type === tipo,
-    )?.value;
-
-  return `${ler("year")}-${ler(
-    "month",
-  )}-${ler("day")}`;
+function nomeNormalizado(nome: string) {
+  return nome.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 }
 
-function normalizar(
-  nome: string,
+function feirasDaData(dataIso: string, extras: FeiraCadastrada[]): FeiraProgramada[] {
+  const data = dataDoCampo(dataIso);
+  if (!data) return [];
+  const cadastradas = feirasExtrasNaData(extras, dataIso).map((feira) => ({
+    id: feira.id, nome: feira.nome, responsaveis: feira.responsaveis,
+    ...(feira.tipo === "evento" ? { turno: "Evento" } : feira.turno ? { turno: feira.turno } : {}),
+  }));
+  return cadastradas;
+}
+
+function nomeDaFeira(feiraId: string, extras: FeiraCadastrada[]) {
+  return extras.find((feira) => feira.id === feiraId)?.nome ?? feiraId;
+}
+
+type QuantidadesPorOrigem = Record<string, number>;
+
+function somarDestinados(usos: Reaproveitamentos): QuantidadesPorOrigem {
+  const totais: QuantidadesPorOrigem = Object.create(null);
+  for (const destino of Object.values(usos)) {
+    for (const [origem, quantidade] of Object.entries(destino)) {
+      totais[origem] = (totais[origem] ?? 0) + quantidade;
+    }
+  }
+  return totais;
+}
+
+function saldoDaSobra(sobraram: number, destinados: number, descartados: number) {
+  return Math.max(0, sobraram - destinados - descartados);
+}
+
+function ReaproveitamentoFeira({
+  chaveDestino,
+  sabores,
+  retornos,
+  usos,
+  destinados,
+  descartes,
+  origemPrioritaria,
+  onSalvar,
+  feirasCadastradas,
+}: {
+  chaveDestino: string;
+  sabores: SaborPlanejado[];
+  retornos: Retornos;
+  usos: Reaproveitamentos;
+  destinados: QuantidadesPorOrigem;
+  descartes: QuantidadesPorOrigem;
+  origemPrioritaria?: string;
+  onSalvar: (valores: Record<string, number>) => Promise<void>;
+  feirasCadastradas: FeiraCadastrada[];
+}) {
+  const dataDestino = chaveDestino.split(":")[0];
+  const origens = Object.entries(retornos).flatMap(([chaveOrigem, retorno]) => {
+    if (chaveOrigem.split(":")[0] >= dataDestino) return [];
+    const feiraId = chaveOrigem.split(":")[1];
+    const nomeFeira = nomeDaFeira(feiraId, feirasCadastradas);
+    return retorno.itens.filter((item) =>
+      item.sobraram > 0 && (
+        sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome)) ||
+        (usos[chaveDestino]?.[chaveDaSobra(chaveOrigem, item.saborId)] ?? 0) > 0
+      ),
+    ).map((item) => ({
+      id: chaveDaSobra(chaveOrigem, item.saborId),
+      chaveOrigem,
+      nome: item.nome,
+      data: chaveOrigem.split(":")[0],
+      feira: nomeFeira,
+      total: item.sobraram,
+    }));
+  }).sort((a, b) => Number(b.chaveOrigem === origemPrioritaria) - Number(a.chaveOrigem === origemPrioritaria));
+  const [usosAoAbrir] = useState(() => usos[chaveDestino] ?? {});
+  const usosAtuais = usos[chaveDestino] ?? {};
+  const destinoMudou = Object.keys(usosAtuais).length !== Object.keys(usosAoAbrir).length ||
+    Object.entries(usosAoAbrir).some(([origem, valor]) => usosAtuais[origem] !== valor);
+  const [valores, setValores] = useState<Record<string, string>>(() =>
+    Object.fromEntries(origens.map((origem) => [origem.id, String(usos[chaveDestino]?.[origem.id] ?? "")])),
+  );
+  const [erro, setErro] = useState("");
+  const [salvandoUso, setSalvandoUso] = useState(false);
+
+  function limiteDaOrigem(origem: { id: string; total: number }) {
+    const outros = (destinados[origem.id] ?? 0) - (usosAtuais[origem.id] ?? 0);
+    return saldoDaSobra(origem.total, outros, descartes[origem.id] ?? 0);
+  }
+
+  async function salvar() {
+    if (salvandoUso || destinoMudou) return;
+    const proximo: Record<string, number> = {};
+    for (const origem of origens) {
+      const texto = valores[origem.id]?.trim() ?? "";
+      const quantidade = texto === "" ? 0 : Number(texto);
+      if (!Number.isSafeInteger(quantidade) || quantidade < 0 || quantidade > limiteDaOrigem(origem)) {
+        setErro(`Confira a quantidade de ${origem.nome} de ${origem.feira}: o saldo disponível foi ultrapassado.`);
+        return;
+      }
+      if (quantidade > 0) proximo[origem.id] = quantidade;
+    }
+    if (origens.some((origem) =>
+      (proximo[origem.id] ?? 0) > 0 &&
+      !sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(origem.nome)),
+    )) {
+      setErro("Remova o uso de sabores que não estão no planejamento desta feira.");
+      return;
+    }
+    setSalvandoUso(true);
+    try {
+      await onSalvar(proximo);
+      setErro("");
+    } catch (falha) {
+      setErro(falha instanceof Error ? falha.message : "Não foi possível salvar o reaproveitamento.");
+    } finally {
+      setSalvandoUso(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
+      <h5 style={{ fontSize: 16 }}>Acrescentar sobras à saída desta feira</h5>
+      <p>As sobras são extras: não reduzem a produção planejada. O total para levar será a produção nova mais o reaproveitamento.</p>
+      {origemPrioritaria && <p>O lote escolhido aparece primeiro entre os sabores compatíveis.</p>}
+      {destinoMudou && <p role="alert">Este destino foi alterado em outro dispositivo. Feche e abra novamente para revisar os valores atuais.</p>}
+      {origens.length === 0 ? <p>Não há saldo disponível de sobras para os sabores planejados.</p> : <>
+        <p>Informe quantos pastéis de cada origem serão usados. Deixe vazio quando não for usar.</p>
+        {origens.map((origem) => {
+          const limite = limiteDaOrigem(origem);
+          return (
+            <label key={origem.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, paddingBlock: 8, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
+              <span><strong>{origem.nome}</strong><br /><small>{origem.feira} · {origem.data.split("-").reverse().join("/")} · limite para esta feira: {limite}</small></span>
+              <span style={{ display: "grid", gap: 4 }}>Usar nesta feira
+                <input type="number" min={0} max={limite} step={1} inputMode="numeric" disabled={salvandoUso || destinoMudou} value={valores[origem.id] ?? ""}
+                  onChange={(event) => { setValores((atual) => ({ ...atual, [origem.id]: event.target.value })); setErro(""); }}
+                  style={{ width: 110, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
+              </span>
+            </label>
+          );
+        })}
+        {erro && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erro}</p>}
+        <Button type="button" variant="primary" disabled={salvandoUso || destinoMudou} onClick={salvar}>
+          {salvandoUso ? "Salvando..." : "Salvar reaproveitamento"}
+        </Button>
+      </>}
+    </div>
+  );
+}
+
+function RegistroProducaoFeira({
+  sabores,
+  registros,
+  usuarioId,
+  limitePorSabor,
+  onSalvar,
+}: {
+  sabores: SaborPlanejado[];
+  registros: RegistroProducao[];
+  usuarioId: string;
+  limitePorSabor: Record<string, number>;
+  onSalvar: (saborId: string, quantidade: number) => Promise<void>;
+}) {
+  const [valores, setValores] = useState<Record<string, string>>(() =>
+    Object.fromEntries(sabores.map((sabor) => [sabor.id,
+      String(registros.find((item) => item.saborId === sabor.id && item.funcionarioId === usuarioId)?.quantidade ?? "")])));
+  const [salvando, setSalvando] = useState<string | null>(null);
+  const [erro, setErro] = useState("");
+
+  async function salvar(sabor: SaborPlanejado) {
+    const texto = valores[sabor.id]?.trim() ?? "";
+    if (texto === "" || !/^\d+$/.test(texto)) {
+      setErro(`Informe quantos pastéis de ${sabor.nome} você produziu. Digite 0 para corrigir o registro.`);
+      return;
+    }
+    const quantidade = Number(texto);
+    const colegas = registros.filter((item) => item.saborId === sabor.id && item.funcionarioId !== usuarioId)
+      .reduce((soma, item) => soma + item.quantidade, 0);
+    if (!Number.isSafeInteger(quantidade) || quantidade < 0 ||
+        quantidade + colegas > limitePorSabor[sabor.id]) {
+      setErro(`O total produzido de ${sabor.nome} ultrapassa os ${limitePorSabor[sabor.id]} pastéis a preparar.`);
+      return;
+    }
+    setSalvando(sabor.id);
+    setErro("");
+    try {
+      await onSalvar(sabor.id, quantidade);
+    } catch (falha) {
+      setErro(falha instanceof Error ? falha.message : "Não foi possível registrar a produção.");
+    } finally {
+      setSalvando(null);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
+      <h5 style={{ fontSize: 16 }}>Registrar produção desta feira</h5>
+      <p>Informe o total que você produziu por sabor. Ao corrigir, substitua seu número anterior.</p>
+      {sabores.map((sabor) => {
+        const total = registros.filter((item) => item.saborId === sabor.id)
+          .reduce((soma, item) => soma + item.quantidade, 0);
+        return (
+          <div key={sabor.id} style={{ display: "grid", gap: 6, borderBottom: "1px solid var(--color-border, #dfe5ec)", paddingBlock: 10 }}>
+            <strong>{sabor.nome}: {total} de {limitePorSabor[sabor.id]} a preparar</strong>
+            <small>{registros.filter((item) => item.saborId === sabor.id && item.quantidade > 0)
+              .map((item) => `${item.funcionario}: ${item.quantidade}`).join(" · ") || "Nenhum registro"}</small>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "end", gap: 8 }}>
+              <label style={{ display: "grid", gap: 4 }}>Produzidos por você
+                <input type="number" min={0} max={limitePorSabor[sabor.id]} step={1} inputMode="numeric"
+                  placeholder="Digite a quantidade" value={valores[sabor.id] ?? ""}
+                  onChange={(event) => { setValores((atual) => ({ ...atual, [sabor.id]: event.target.value })); setErro(""); }}
+                  style={{ width: 155, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
+              </label>
+              <Button type="button" variant="secondary" disabled={salvando !== null}
+                onClick={() => salvar(sabor)}>{salvando === sabor.id ? "Salvando..." : "Salvar"}</Button>
+            </div>
+          </div>
+        );
+      })}
+      {erro && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erro}</p>}
+    </div>
+  );
+}
+
+type GrupoSobrasHistorico = {
+  chave: string;
+  itens: Array<{ saborId: string; nome: string; disponivel: number }>;
+};
+
+function montarHistoricoFeira(
+  feiraId: string,
+  dataSelecionada: string,
+  saidas: Saidas,
+  retornos: Retornos,
+  sabores: SaborPlanejado[],
+  sobras: GrupoSobrasHistorico[],
+  usosDaFeira: Record<string, number>,
 ) {
-  return chaveSabor(nome);
+  const edicoes = Object.keys(saidas)
+    .filter((chave) => chave.slice(11) === feiraId && chave.slice(0, 10) < dataSelecionada)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, 3);
+  type LinhaHistorico = {
+    nome: string;
+    edicoes: Record<string, { sairam: number | null; sobraram: number | null }>;
+    disponivel: number;
+    destinado: number;
+  };
+  const linhas = new Map<string, LinhaHistorico>();
+
+  function obterLinha(nome: string): LinhaHistorico {
+    const id = nomeNormalizado(nome);
+    const linha = linhas.get(id) ?? { nome, edicoes: {}, disponivel: 0, destinado: 0 };
+    linhas.set(id, linha);
+    return linha;
+  }
+
+  for (const sabor of sabores) obterLinha(sabor.nome);
+  for (const chave of edicoes) {
+    for (const item of saidas[chave].itens) {
+      const linha = obterLinha(item.nome);
+      const registro = linha.edicoes[chave] ?? { sairam: null, sobraram: null };
+      registro.sairam = (registro.sairam ?? 0) + item.separado;
+      linha.edicoes[chave] = registro;
+    }
+    for (const item of retornos[chave]?.itens ?? []) {
+      const linha = obterLinha(item.nome);
+      const registro = linha.edicoes[chave] ?? { sairam: null, sobraram: null };
+      registro.sobraram = (registro.sobraram ?? 0) + item.sobraram;
+      linha.edicoes[chave] = registro;
+    }
+  }
+
+  for (const grupo of sobras) {
+    for (const item of grupo.itens) {
+      const linha = linhas.get(nomeNormalizado(item.nome));
+      if (!linha) continue;
+      linha.disponivel += item.disponivel;
+      linha.destinado += usosDaFeira[chaveDaSobra(grupo.chave, item.saborId)] ?? 0;
+    }
+  }
+
+  return {
+    edicoes,
+    linhas: [...linhas.entries()].sort(([, a], [, b]) => a.nome.localeCompare(b.nome, "pt-BR")),
+  };
 }
 
-export default function ProducaoPasteisPage() {
-  const { usuario } =
-    useAuth();
+function HistoricoPlanejamento({
+  feira, data, saidas, retornos, sabores, sobras, usosDaFeira, saldoSincronizado,
+}: {
+  feira: FeiraProgramada;
+  data: string;
+  saidas: Saidas;
+  retornos: Retornos;
+  sabores: SaborPlanejado[];
+  sobras: GrupoSobrasHistorico[];
+  usosDaFeira: Record<string, number>;
+  saldoSincronizado: boolean;
+}) {
+  const { edicoes, linhas } = montarHistoricoFeira(feira.id, data, saidas, retornos, sabores, sobras, usosDaFeira);
+  const temDestinados = linhas.some(([, linha]) => linha.destinado > 0);
+  const estiloCelula = { padding: "10px 12px", textAlign: "left" as const, borderBottom: "1px solid var(--color-border)" };
 
-  const usuarioId =
-    usuario?.id;
-
-  const {
-    feirasCadastradas,
-    erroFeirasCadastradas,
-  } = useFeirasCadastradas(
-    usuarioId,
+  return (
+    <details style={{ minWidth: 0, marginBottom: 16, padding: 12, border: "1px solid var(--color-border)", borderRadius: 10 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 700, minHeight: 44, alignContent: "center" }}>
+        Histórico para planejar{edicoes.length > 0 ? ` · ${edicoes.length} ${edicoes.length === 1 ? "edição" : "edições"}` : ""}
+      </summary>
+      <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
+        {edicoes.length === 0
+          ? <p>Ainda não há saídas conferidas em datas anteriores neste cadastro.</p>
+          : <p>Últimas saídas conferidas de {feira.nome}, anteriores à data selecionada. “—” significa que não há registro para aquele sabor.</p>}
+        {linhas.length > 0 && (
+          <div role="region" aria-label={`Histórico por sabor de ${feira.nome}`} tabIndex={0} style={{ minWidth: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th scope="col" style={estiloCelula}>Sabor</th>
+                  {edicoes.map((chave) => <th scope="col" key={chave} style={estiloCelula}>{chave.slice(0, 10).split("-").reverse().join("/")}</th>)}
+                  <th scope="col" style={estiloCelula}>Disponíveis</th>
+                  {temDestinados && <th scope="col" style={estiloCelula}>Já destinados aqui</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {linhas.map(([id, linha]) => (
+                  <tr key={id}>
+                    <th scope="row" style={estiloCelula}>{linha.nome}</th>
+                    {edicoes.map((chave) => (
+                      <td key={chave} style={estiloCelula}>
+                        <div>Saíram: {linha.edicoes[chave]?.sairam ?? "—"}</div>
+                        <div>Sobraram: {linha.edicoes[chave]?.sobraram ?? "—"}</div>
+                      </td>
+                    ))}
+                    <td style={estiloCelula}>{saldoSincronizado ? linha.disponivel : "—"}</td>
+                    {temDestinados && <td style={estiloCelula}>{linha.destinado}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {linhas.length > 0 && (
+          <p>{saldoSincronizado
+            ? "Disponíveis: sobras dos lotes anteriores para os sabores da tabela, descontando destinações e descartes. Para usar esse saldo, salve o planejamento e abra “Usar pastéis da geladeira”."
+            : "Saldo indisponível enquanto os descartes não estiverem sincronizados."}</p>
+        )}
+      </div>
+    </details>
   );
+}
 
-  const [data, setData] =
-    useState(hojeBrasil);
-
-  const [
-    feiraId,
-    setFeiraId,
-  ] = useState("");
-
-  const [
-    responsavel,
-    setResponsavel,
-  ] = useState("");
-
-  const [
-    planejamentos,
-    setPlanejamentos,
-  ] = useState<Planejamentos>(
-    {},
+function PlanejadorSabores({
+  sabores,
+  bloqueado,
+  onSalvar,
+}: {
+  sabores: SaborPlanejado[];
+  bloqueado: boolean;
+  onSalvar: (itens: SaborPlanejado[]) => Promise<void>;
+}) {
+  // Prioriza o registro salvo: um mesmo ID pode ter recebido um nome completo.
+  const catalogo = [...sabores, ...SABORES_CEREJEIRAS].filter(
+    (sabor, indice, todos) => todos.findIndex((item) =>
+      item.id === sabor.id || nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome),
+    ) === indice,
   );
+  const [selecionados, setSelecionados] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, sabores.some((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))])),
+  );
+  const [quantidades, setQuantidades] = useState<Record<string, string>>(() =>
+    Object.fromEntries(catalogo.map((sabor) => [sabor.nome, String(sabores.find((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))?.quantidade ?? "")])),
+  );
+  const [erroPlanejamento, setErroPlanejamento] = useState("");
+  const [salvando, setSalvando] = useState(false);
 
-  const [
-    carregando,
-    setCarregando,
-  ] = useState(true);
+  async function salvar() {
+    const escolhidos = catalogo.filter((sabor) => selecionados[sabor.nome]);
+    if (escolhidos.length === 0) {
+      setErroPlanejamento("Selecione ao menos um sabor.");
+      return;
+    }
+    if (escolhidos.some((sabor) => {
+      const valor = quantidades[sabor.nome]?.trim();
+      return !valor || !Number.isSafeInteger(Number(valor)) || Number(valor) <= 0;
+    })) {
+      setErroPlanejamento("Informe uma quantidade inteira maior que zero para cada sabor selecionado.");
+      return;
+    }
+    setSalvando(true);
+    try {
+      await onSalvar(escolhidos.map((sabor) => ({
+      id: sabores.find((atual) => atual.nome.toLocaleLowerCase("pt-BR") === sabor.nome.toLocaleLowerCase("pt-BR"))?.id ?? sabor.id,
+      nome: sabor.nome,
+      quantidade: Number(quantidades[sabor.nome]),
+      })));
+      setErroPlanejamento("");
+    } catch (erro) {
+      setErroPlanejamento(erro instanceof Error ? erro.message : "Não foi possível salvar. Tente novamente.");
+    } finally {
+      setSalvando(false);
+    }
+  }
 
-  const [erro, setErro] =
-    useState<string | null>(
-      null,
-    );
+  if (bloqueado) return <p>Esta feira já foi fechada. Reabra a feira para corrigir os sabores.</p>;
 
-  useEffect(() => {
-    if (!usuarioId) {
+  return (
+    <div style={{ display: "grid", gap: 14, width: "100%" }}>
+      <h5 style={{ fontSize: 16 }}>Selecione os sabores e as quantidades</h5>
+      <p>Marque apenas os sabores que irão para esta feira.</p>
+      <div style={{ display: "grid", gap: 10 }}>
+        {catalogo.map((sabor) => {
+          const marcado = Boolean(selecionados[sabor.nome]);
+          return (
+            <div key={sabor.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: 10, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 44, cursor: "pointer" }}>
+                <input type="checkbox" checked={marcado} onChange={(event) => {
+                  setSelecionados((atual) => ({ ...atual, [sabor.nome]: event.target.checked }));
+                  setErroPlanejamento("");
+                }} style={{ width: 22, height: 22 }} />
+                <strong>{sabor.nome}</strong>
+              </label>
+              {marcado && (
+                <label style={{ display: "grid", gap: 4 }}>
+                  Quantidade
+                  <input type="number" min={1} step={1} inputMode="numeric" value={quantidades[sabor.nome] ?? ""}
+                    onChange={(event) => { setQuantidades((atual) => ({ ...atual, [sabor.nome]: event.target.value })); setErroPlanejamento(""); }}
+                    style={{ width: 110, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
+                </label>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {erroPlanejamento && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erroPlanejamento}</p>}
+      <Button type="button" variant="primary" disabled={salvando} onClick={salvar}>
+        {salvando ? "Salvando..." : "Salvar planejamento"}
+      </Button>
+    </div>
+  );
+}
+
+function chaveDaFeira(data: string, feiraId: string): string {
+  return `${data}:${feiraId}`;
+}
+
+function saboresDaFeira(
+  planejamentos: Planejamentos,
+  chave: string,
+  feiraId: string,
+): SaborPlanejado[] {
+  // Uma lista salva para a data tem prioridade sobre o modelo habitual.
+  if (
+    Object.prototype.hasOwnProperty.call(
+      planejamentos,
+      chave,
+    )
+  ) {
+    return planejamentos[chave];
+  }
+
+  return feiraId === "cerejeira"
+    ? SABORES_CEREJEIRAS
+    : [];
+}
+
+function dataLocalISO(data: Date): string {
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, "0");
+  const dia = String(data.getDate()).padStart(2, "0");
+
+  return `${ano}-${mes}-${dia}`;
+}
+
+function dataDoCampo(valor: string): Date | null {
+  const partes = valor.split("-").map(Number);
+
+  if (
+    partes.length !== 3 ||
+    partes.some((parte) => !Number.isInteger(parte))
+  ) {
+    return null;
+  }
+
+  const [ano, mes, dia] = partes;
+  const data = new Date(ano, mes - 1, dia);
+
+  if (
+    data.getFullYear() !== ano ||
+    data.getMonth() !== mes - 1 ||
+    data.getDate() !== dia
+  ) {
+    return null;
+  }
+
+  return data;
+}
+
+function ConferenciaSaida({
+  sabores,
+  reaproveitados,
+  produzidos,
+  registro,
+  nomeFeira,
+  retornoRegistrado,
+  onConfirmar,
+}: {
+  sabores: SaborPlanejado[];
+  reaproveitados: Record<string, number>;
+  produzidos: Record<string, number>;
+  registro?: RegistroSaida;
+  nomeFeira: string;
+  retornoRegistrado: boolean;
+  onConfirmar: (itens: ItemSaida[]) => Promise<void>;
+}) {
+  const assinatura = JSON.stringify(sabores.map(sabor => [sabor.id, sabor.quantidade, reaproveitados[sabor.id] ?? 0, produzidos[sabor.id] ?? null]));
+  const [assinaturaAoAbrir] = useState(assinatura);
+  const contextoMudou = assinatura !== assinaturaAoAbrir;
+  const novaProducao = (sabor: SaborPlanejado) => produzidos[sabor.id] ?? sabor.quantidade;
+  const totalParaLevar = (sabor: SaborPlanejado) => novaProducao(sabor) + (reaproveitados[sabor.id] ?? 0);
+  const [editando, setEditando] = useState(!registro);
+  const [quantidades, setQuantidades] = useState<Record<string, string>>(() =>
+    Object.fromEntries(sabores.map((sabor) => [sabor.id, String(totalParaLevar(sabor))])),
+  );
+  const [divergenciaRevisada, setDivergenciaRevisada] = useState(false);
+  const [erroSaida, setErroSaida] = useState("");
+  const [salvandoSaida, setSalvandoSaida] = useState(false);
+
+  async function confirmar() {
+    if (salvandoSaida) return;
+    if (contextoMudou) { setErroSaida("A produção, o planejamento ou as sobras mudaram. Feche e reabra a conferência para revisar os totais atualizados."); return; }
+    const itens = sabores.map((sabor) => ({
+      saborId: sabor.id,
+      nome: sabor.nome,
+      previsto: sabor.quantidade,
+      separado: Number(quantidades[sabor.id]),
+    }));
+
+    if (itens.some((item) =>
+      quantidades[item.saborId]?.trim() === "" ||
+      !Number.isSafeInteger(item.separado) || item.separado < 0
+    )) {
+      setErroSaida("Informe uma quantidade inteira, igual ou maior que zero, para cada sabor.");
       return;
     }
 
-    return escutarPlanejamentos(
-      (proximos) => {
-        setPlanejamentos(
-          proximos,
-        );
+    if (itens.some((item) => item.separado !== totalParaLevar(sabores.find(sabor => sabor.id === item.saborId)!)) && !divergenciaRevisada) {
+      setErroSaida("Revise as diferenças e marque a confirmação antes de salvar.");
+      return;
+    }
 
-        setCarregando(false);
-        setErro(null);
-      },
-      (falha) => {
-        setErro(
-          falha.message,
-        );
+    setSalvandoSaida(true);
+    try {
+      await onConfirmar(itens);
+      setErroSaida("");
+      setEditando(false);
+    } catch (erro) {
+      setErroSaida(erro instanceof Error ? erro.message : "Não foi possível confirmar a saída.");
+    } finally {
+      setSalvandoSaida(false);
+    }
+  }
 
-        setCarregando(false);
-      },
+  if (registro && !editando) {
+    const totalSeparado = registro.itens.reduce((total, item) => total + item.separado, 0);
+    return (
+      <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, background: "var(--color-success-light, #e5f4ea)", borderRadius: 12 }}>
+        <strong>Saída conferida: {totalSeparado} pastéis</strong>
+        <span style={{ fontSize: 14 }}>Por {registro.conferidoPor} em {new Date(registro.conferidoEm).toLocaleString("pt-BR")}</span>
+        {registro.itens.map((item) => (
+          <span key={item.saborId}>
+            {item.nome}: {item.separado} separados (previstos: {item.previsto})
+          </span>
+        ))}
+        {retornoRegistrado && <p>Para alterar a saída, será preciso corrigir primeiro o fechamento desta feira.</p>}
+        <Button type="button" variant="secondary" disabled={retornoRegistrado} onClick={() => {
+          setQuantidades(Object.fromEntries(sabores.map((sabor) => [
+            sabor.id,
+            String(registro.itens.find((item) => item.saborId === sabor.id)?.separado ?? totalParaLevar(sabor)),
+          ])));
+          setDivergenciaRevisada(false);
+          setEditando(true);
+        }}>Corrigir conferência</Button>
+      </div>
     );
-  }, [usuarioId]);
+  }
 
-  const feirasDoDia =
-    useMemo(() => {
-      /*
-       * O cadastro é a fonte
-       * principal da agenda.
-       *
-       * Planos antigos continuam
-       * visíveis quando a feira
-       * não consta mais no cadastro.
-       */
-      const mapa = new Map<
-        string,
-        FeiraDoDia
-      >(
-        feirasExtrasNaData(
-          feirasCadastradas,
-          data,
-        ).map(
-          (feira) =>
-            [
-              feira.id,
-              {
-                id: feira.id,
-                nome: feira.nome,
-                responsaveis:
-                  feira.responsaveis,
-              },
-            ] as const,
-        ),
-      );
+  const temDiferenca = sabores.some((sabor) =>
+    quantidades[sabor.id]?.trim() !== "" &&
+    Number(quantidades[sabor.id]) !== totalParaLevar(sabor)
+  );
 
-      for (
-        const chave of Object.keys(
-          planejamentos,
-        )
-      ) {
+  return (
+    <div style={{ display: "grid", gap: 14, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
+      <h5 style={{ fontSize: 16 }}>Conferir saída para {nomeFeira}</h5>
+      <p>Confira o total colocado na pirua: produção nova mais sobras acrescentadas. Zero significa que o sabor não saiu. O planejamento original continua preservado.</p>
+      <strong>Total de referência para levar: {sabores.reduce((soma, sabor) => soma + totalParaLevar(sabor), 0)} pastéis</strong>
+      {sabores.map((sabor) => (
+        <label key={sabor.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <span><strong>{sabor.nome}</strong><br /><small>Produção {produzidos[sabor.id] === undefined ? "planejada" : "registrada"}: {novaProducao(sabor)} + sobras: {reaproveitados[sabor.id] ?? 0} = {totalParaLevar(sabor)} para levar</small></span>
+          <span style={{ display: "grid", gap: 4 }}>
+            <span>Separados</span>
+            <input type="number" min={0} step={1} inputMode="numeric"
+              value={quantidades[sabor.id] ?? ""}
+              onChange={(event) => {
+                setQuantidades((atual) => ({ ...atual, [sabor.id]: event.target.value }));
+                setDivergenciaRevisada(false);
+                setErroSaida("");
+              }}
+              style={{ width: 100, minHeight: 48, padding: 8, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 }} />
+          </span>
+        </label>
+      ))}
+      {temDiferenca && (
+        <label style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 48 }}>
+          <input type="checkbox" checked={divergenciaRevisada}
+            onChange={(event) => setDivergenciaRevisada(event.target.checked)}
+            style={{ width: 22, height: 22, flexShrink: 0 }} />
+          Conferi as diferenças entre produção + sobras e o total separado.
+        </label>
+      )}
+      {contextoMudou && <p role="alert">Os totais mudaram. Feche e reabra a conferência antes de salvar.</p>}
+      {erroSaida && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erroSaida}</p>}
+      <Button type="button" variant="primary" disabled={salvandoSaida || contextoMudou} onClick={confirmar}>
+        {salvandoSaida ? "Salvando..." : "Confirmar saída"}
+      </Button>
+      {registro && <Button type="button" variant="secondary" onClick={() => setEditando(false)}>Cancelar correção</Button>}
+    </div>
+  );
+}
+
+function FechamentoFeira({
+  saida, retorno, nomeFeira, minimoAlocado, onConfirmar,
+}: {
+  saida: RegistroSaida;
+  retorno?: RegistroRetorno;
+  nomeFeira: string;
+  minimoAlocado: Record<string, number>;
+  onConfirmar: (itens: ItemRetorno[], versao?: string) => Promise<void>;
+}) {
+  type Contagem = { sobras: string; cortesias: string; perdas: string; motivoCortesia: string; motivoPerda: string };
+  function valoresIniciais(): Record<string, Contagem> {
+    return Object.fromEntries(saida.itens.map((item) => {
+      const salvo = retorno?.itens.find((i) => i.saborId === item.saborId);
+      return [item.saborId, { sobras: salvo ? String(salvo.sobraram) : "",
+        cortesias: String(salvo?.cortesias ?? 0), perdas: String(salvo?.perdas ?? 0),
+        motivoCortesia: salvo?.motivoCortesia ?? "", motivoPerda: salvo?.motivoPerda ?? "" }];
+    }));
+  }
+  const [editando, setEditando] = useState(!retorno);
+  const [versaoEdicao, setVersaoEdicao] = useState(retorno?.registradoEm);
+  const [contagens, setContagens] = useState<Record<string, Contagem>>(valoresIniciais);
+  const [erroRetorno, setErroRetorno] = useState("");
+  const [salvandoRetorno, setSalvandoRetorno] = useState(false);
+  const emAndamento = useRef(false);
+  const estiloCampo = { width: 120, maxWidth: "100%", minHeight: 48, padding: 8,
+    border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 10 };
+  const estiloLabel = { display: "grid", gap: 4 };
+
+  function alterar(id: string, campo: keyof Contagem, valor: string) {
+    setContagens((atual) => ({ ...atual, [id]: { ...atual[id], [campo]: valor } }));
+    setErroRetorno("");
+  }
+  function numero(texto: string | undefined, opcional = false) {
+    if (texto === undefined || texto.trim() === "") return opcional ? 0 : NaN;
+    return Number(texto);
+  }
+  const itens: ItemRetorno[] = saida.itens.map((item) => {
+    const campos = contagens[item.saborId];
+    const cortesias = numero(campos?.cortesias, true);
+    const perdas = numero(campos?.perdas, true);
+    return { saborId: item.saborId, nome: item.nome, separados: item.separado,
+      sobraram: numero(campos?.sobras), guardados: numero(campos?.sobras), cortesias, perdas,
+      motivoCortesia: cortesias > 0 ? (campos?.motivoCortesia ?? "").trim() : "",
+      motivoPerda: perdas > 0 ? (campos?.motivoPerda ?? "").trim() : "" };
+  });
+  const quantidadesConferidas = itens.every((item) => [item.sobraram, item.cortesias ?? 0, item.perdas ?? 0]
+    .every((valor) => Number.isSafeInteger(valor) && valor >= 0) &&
+    item.sobraram + (item.cortesias ?? 0) + (item.perdas ?? 0) <= item.separados);
+  const resumo = (lista: ItemRetorno[]) => lista.reduce((total, item) => ({
+    saida: total.saida + item.separados, sobras: total.sobras + item.sobraram,
+    cortesias: total.cortesias + (item.cortesias ?? 0), perdas: total.perdas + (item.perdas ?? 0),
+    vendidos: total.vendidos + item.separados - item.sobraram - (item.cortesias ?? 0) - (item.perdas ?? 0),
+  }), { saida: 0, sobras: 0, cortesias: 0, perdas: 0, vendidos: 0 });
+
+  async function confirmar() {
+    if (emAndamento.current) return;
+    const invalido = itens.find((item) => !baixasFechamentoValidas(item) || item.sobraram < (minimoAlocado[item.saborId] ?? 0));
+    if (invalido) {
+      setErroRetorno(`Confira ${nomeSabor(invalido.nome)}: informe sobras, cortesias e perdas inteiras, sem ultrapassar a saída. As sobras devem cobrir o que já foi destinado. Justifique cortesias e perdas com 5 a 200 caracteres.`);
+      return;
+    }
+    emAndamento.current = true;
+    setSalvandoRetorno(true);
+    try {
+      await onConfirmar(itens, versaoEdicao);
+      setErroRetorno(""); setEditando(false);
+    } catch (erro) {
+      setErroRetorno(erro instanceof Error ? erro.message : "Não foi possível salvar o fechamento.");
+    } finally {
+      emAndamento.current = false; setSalvandoRetorno(false);
+    }
+  }
+
+  if (retorno && !editando) {
+    const total = resumo(retorno.itens);
+    return <div style={{ display: "grid", gap: 10, width: "100%", padding: 14, background: "var(--color-info-light, #e7f0fa)", borderRadius: 12 }}>
+      <strong>Feira fechada · {total.vendidos} vendidos · {total.sobras} guardados</strong>
+      <span>{total.saida} saíram · {total.cortesias} cortesias · {total.perdas} perdas durante a feira</span>
+      <small>Vendidos = saída − sobras − cortesias − perdas. Baixas posteriores das sobras são registradas em Descarte e doação.</small>
+      <span style={{ fontSize: 14 }}>Por {retorno.registradoPor} em {new Date(retorno.registradoEm).toLocaleString("pt-BR")}</span>
+      {retorno.itens.map((item) => <div key={item.saborId} style={{ display: "grid", gap: 4 }}>
+        <span><strong>{nomeSabor(item.nome)}</strong>: {item.sobraram} guardados · {item.cortesias ?? 0} cortesias · {item.perdas ?? 0} perdas · {item.separados - item.sobraram - (item.cortesias ?? 0) - (item.perdas ?? 0)} vendidos</span>
+        {(item.cortesias ?? 0) > 0 && <small>Motivo da cortesia: {item.motivoCortesia}</small>}
+        {(item.perdas ?? 0) > 0 && <small>Motivo da perda: {item.motivoPerda}</small>}
+      </div>)}
+      {retorno.reaproveitado && <p>Este fechamento tem sobras já destinadas. Peça ao Dono para revisar os registros antes de corrigir.</p>}
+      <Button type="button" variant="secondary" disabled={retorno.reaproveitado} onClick={() => {
+        setContagens(valoresIniciais()); setVersaoEdicao(retorno.registradoEm); setErroRetorno(""); setEditando(true);
+      }}>Corrigir fechamento</Button>
+    </div>;
+  }
+
+  const total = quantidadesConferidas ? resumo(itens) : null;
+  return <div style={{ display: "grid", gap: 14, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
+    <h5 style={{ fontSize: 16 }}>Fechamento de {nomeFeira}</h5>
+    <p>Conte o que voltou e será guardado. Registre separadamente pastéis oferecidos de cortesia e perdas ocorridas durante esta feira. Não inclua baixas de sobras guardadas de outras feiras.</p>
+    <fieldset disabled={salvandoRetorno} style={{ display: "grid", gap: 14, border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <legend style={{ fontWeight: 700 }}>Contagem por sabor</legend>
+      {saida.itens.map((item) => {
+        const campos = contagens[item.saborId];
+        const contagem = itens.find((i) => i.saborId === item.saborId)!;
+        const valido = [contagem.sobraram, contagem.cortesias ?? 0, contagem.perdas ?? 0].every((q) => Number.isSafeInteger(q) && q >= 0) &&
+          contagem.sobraram + (contagem.cortesias ?? 0) + (contagem.perdas ?? 0) <= item.separado;
+        return <div key={item.saborId} style={{ display: "grid", gap: 10, paddingBlock: 10, borderBottom: "1px solid var(--color-border, #dfe5ec)" }}>
+          <strong>{nomeSabor(item.nome)} · {item.separado} saíram</strong>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+            <label style={estiloLabel}>Sobraram para guardar<input aria-label={`Sobras de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.sobras ?? ""} placeholder="Digite a sobra" onChange={(e) => alterar(item.saborId, "sobras", e.target.value)} style={estiloCampo} /></label>
+            <label style={estiloLabel}>Cortesias<input aria-label={`Cortesias de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.cortesias ?? "0"} onChange={(e) => alterar(item.saborId, "cortesias", e.target.value)} style={estiloCampo} /></label>
+            <label style={estiloLabel}>Perdas na feira<input aria-label={`Perdas de ${nomeSabor(item.nome)}`} type="number" min={0} max={item.separado} step={1} inputMode="numeric"
+              value={campos?.perdas ?? "0"} onChange={(e) => alterar(item.saborId, "perdas", e.target.value)} style={estiloCampo} /></label>
+          </div>
+          {numero(campos?.cortesias, true) > 0 && <label style={estiloLabel}>Motivo da cortesia (5 a 200 caracteres)
+            <textarea value={campos?.motivoCortesia ?? ""} maxLength={200} rows={2} onChange={(e) => alterar(item.saborId, "motivoCortesia", e.target.value)} style={{ ...estiloCampo, width: "100%" }} /></label>}
+          {numero(campos?.perdas, true) > 0 && <label style={estiloLabel}>Motivo da perda (5 a 200 caracteres)
+            <textarea value={campos?.motivoPerda ?? ""} maxLength={200} rows={2} onChange={(e) => alterar(item.saborId, "motivoPerda", e.target.value)} style={{ ...estiloCampo, width: "100%" }} /></label>}
+          <small>{valido ? `Vendidos: ${item.separado - contagem.sobraram - (contagem.cortesias ?? 0) - (contagem.perdas ?? 0)}` : "Preencha a contagem; a soma não pode superar a saída."}</small>
+        </div>;
+      })}
+      <div role="status" aria-live="polite">{total
+        ? `${total.saida} saíram · ${total.sobras} voltaram · ${total.cortesias} cortesias · ${total.perdas} perdas · ${total.vendidos} vendidos`
+        : "Preencha as sobras de todos os sabores para conferir o resumo."}</div>
+      {erroRetorno && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erroRetorno}</p>}
+      <Button type="button" variant="primary" disabled={salvandoRetorno} onClick={confirmar}>
+        {salvandoRetorno ? "Salvando..." : "Confirmar fechamento"}
+      </Button>
+      {retorno && <Button type="button" variant="secondary" onClick={() => setEditando(false)}>Cancelar correção</Button>}
+    </fieldset>
+  </div>;
+}
+
+export default function FeirasPage() {
+  const { usuario, carregando } = useAuth();
+  const router = useRouter();
+  const { feirasCadastradas, erroFeirasCadastradas } = useFeirasCadastradas(usuario?.id);
+
+  const [dataSelecionada, setDataSelecionada] = useState(
+    () => dataLocalISO(new Date()),
+  );
+  const [calendarioAberto, setCalendarioAberto] = useState(false);
+  const [mesVisivel, setMesVisivel] = useState(() => {
+    const hoje = new Date();
+    return new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  });
+
+  const [planejamentos, setPlanejamentos] =
+    useState<Planejamentos>({});
+  const travaPadrao = useRef(false);
+  const [salvandoPadrao, setSalvandoPadrao] = useState<string | null>(null);
+  const [feedbackPadrao, setFeedbackPadrao] = useState<{
+    chave: string; texto: string; erro: boolean;
+  } | null>(null);
+  const [planosLocais, setPlanosLocais] = useState<Planejamentos>({});
+  const [planosSincronizados, setPlanosSincronizados] = useState(false);
+  const [erroSincronizacao, setErroSincronizacao] = useState("");
+  const [importando, setImportando] = useState(false);
+  const [saidas, setSaidas] = useState<Saidas>({});
+  const [saidasLocais, setSaidasLocais] = useState<Saidas>({});
+  const [saidasSincronizadas, setSaidasSincronizadas] = useState(false);
+  const [erroSaidas, setErroSaidas] = useState("");
+  const [importandoSaidas, setImportandoSaidas] = useState(false);
+  const [saidaAberta, setSaidaAberta] = useState<string | null>(null);
+  const [retornos, setRetornos] = useState<Retornos>({});
+  const [sobrasDetalhadas, setSobrasDetalhadas] = useState<Record<string, boolean>>({});
+  const [descartesRemotos, setDescartesRemotos] = useState<{
+    uid: string; itens: QuantidadesPorOrigem;
+  } | null>(null);
+  const [erroDescartes, setErroDescartes] = useState("");
+  const [atalhoSobras, setAtalhoSobras] = useState<{
+    origem: string; data: string; destinoId: string;
+  } | null>(null);
+  const [avisoSobras, setAvisoSobras] = useState("");
+  const podeConsultarSaldo = Boolean(usuario?.perfis.some((perfil) => perfil === "dono" || perfil === "producao"));
+  const [retornosLocais, setRetornosLocais] = useState<Retornos>({});
+  const [fechamentosSincronizados, setFechamentosSincronizados] = useState(false);
+  const [erroFechamentos, setErroFechamentos] = useState("");
+  const [importandoFechamentos, setImportandoFechamentos] = useState(false);
+  const [reaproveitamentos, setReaproveitamentos] = useState<Reaproveitamentos>({});
+  const [usosLocais, setUsosLocais] = useState<Reaproveitamentos>({});
+  const [usosSincronizados, setUsosSincronizados] = useState(false);
+  const [erroUsos, setErroUsos] = useState("");
+  const [importandoUsos, setImportandoUsos] = useState(false);
+  const [reaproveitamentoAberto, setReaproveitamentoAberto] = useState<string | null>(null);
+  const [producoes, setProducoes] = useState<ProducoesFeira>({});
+  const [producoesSincronizadas, setProducoesSincronizadas] = useState(false);
+  const [erroProducao, setErroProducao] = useState("");
+  const [producaoAberta, setProducaoAberta] = useState<string | null>(null);
+  const [retornoAberto, setRetornoAberto] = useState<string | null>(null);
+
+  const [feiraAberta, setFeiraAberta] =
+    useState<string | null>(null);
+  const [detalhesAbertos, setDetalhesAbertos] = useState<string | null>(null);
+
+
+  useEffect(() => {
+    const temporizador = window.setTimeout(() => {
+    try {
+      const salvo = localStorage.getItem(STORAGE_KEY);
+
+      if (salvo) {
+        const dados: unknown = JSON.parse(salvo);
+
         if (
-          !chave.startsWith(
-            `${data}:`,
-          )
+          dados !== null &&
+          typeof dados === "object" &&
+          !Array.isArray(dados)
         ) {
-          continue;
-        }
+          const planejamentosSalvos = {
+            ...(dados as Planejamentos),
+          };
 
-        const id = chave.slice(
-          data.length + 1,
-        );
-
-        if (mapa.has(id)) {
-          continue;
-        }
-
-        const cadastrada =
-          feirasCadastradas.find(
-            (feira) =>
-              feira.id === id,
-          );
-
-        mapa.set(id, {
-          id,
-          nome:
-            cadastrada?.nome ??
-            FEIRAS[id] ??
-            id,
-          responsaveis:
-            cadastrada
-              ?.responsaveis ??
-            [],
-        });
-      }
-
-      return [
-        ...mapa.values(),
-      ].sort(
-        (a, b) =>
-          a.nome.localeCompare(
-            b.nome,
-            "pt-BR",
-          ),
-      );
-    }, [
-      data,
-      planejamentos,
-      feirasCadastradas,
-    ]);
-
-  const responsaveis =
-    useMemo(
-      () =>
-        Array.from(
-          new Set(
-            feirasDoDia.flatMap(
-              (feira) =>
-                feira.responsaveis
-                  .map((nome) =>
-                    nome.trim(),
-                  )
-                  .filter(Boolean),
-            ),
-          ),
-        ).sort((a, b) =>
-          a.localeCompare(
-            b,
-            "pt-BR",
-          ),
-        ),
-      [feirasDoDia],
-    );
-
-  const feirasFiltradas =
-    useMemo(
-      () =>
-        responsavel
-          ? feirasDoDia.filter(
-              (feira) =>
-                feira.responsaveis.some(
-                  (nome) =>
-                    normalizar(
-                      nome,
-                    ) ===
-                    normalizar(
-                      responsavel,
-                    ),
-                ),
-            )
-          : feirasDoDia,
-      [
-        responsavel,
-        feirasDoDia,
-      ],
-    );
-
-  const feiraSelecionada =
-    feirasFiltradas.some(
-      (feira) =>
-        feira.id === feiraId,
-    )
-      ? feiraId
-      : (feirasFiltradas[0]
-          ?.id ?? "");
-
-  const previstos =
-    useMemo(
-      () =>
-        feiraSelecionada
-          ? planejamentos[
-              `${data}:${feiraSelecionada}`
-            ] ?? []
-          : [],
-      [
-        feiraSelecionada,
-        planejamentos,
-        data,
-      ],
-    );
-
-  const padrao = useMemo(() => padraoDaFeira({
-    id: feiraSelecionada,
-    nome: feirasDoDia.find(feira => feira.id === feiraSelecionada)?.nome ?? feiraSelecionada,
-  }, [], data) ?? [], [feiraSelecionada, feirasDoDia, data]);
-
-  const temPadrao =
-    padrao.length > 0;
-
-  const linhas =
-    useMemo(() => {
-      const restantes =
-        new Map(
-          previstos.map(
-            (item) => [
-              item.id,
-              item,
-            ],
-          ),
-        );
-
-      const resultado:
-        LinhaProducao[] =
-        padrao.map(
-          (item) => {
-            const previsto =
-              restantes.get(
-                item.id,
-              ) ??
-              previstos.find(
-                (atual) =>
-                  normalizar(
-                    atual.nome,
-                  ) ===
-                  normalizar(
-                    item.nome,
-                  ),
-              );
-
-            if (previsto) {
-              restantes.delete(
-                previsto.id,
-              );
+          // Recupera dados caso o ID "Cerejeiras" tenha sido
+          // usado durante o teste anterior.
+          for (const chave of Object.keys(
+            planejamentosSalvos,
+          )) {
+            if (!chave.endsWith(":Cerejeiras")) {
+              continue;
             }
 
-            return {
-              id: item.id,
-              nome: item.nome,
-              padrao:
-                item.quantidade,
-              previsto:
-                previsto
-                  ?.quantidade ??
-                0,
-            };
-          },
-        );
+            const chaveEstavel = chave.replace(
+              /:Cerejeiras$/,
+              ":cerejeira",
+            );
 
-      for (
-        const item of restantes.values()
-      ) {
-        resultado.push({
-          id: item.id,
-          nome: item.nome,
-          padrao: temPadrao
-            ? 0
-            : null,
-          previsto:
-            item.quantidade,
-        });
+            if (
+              !Object.prototype.hasOwnProperty.call(
+                planejamentosSalvos,
+                chaveEstavel,
+              )
+            ) {
+              planejamentosSalvos[chaveEstavel] =
+                planejamentosSalvos[chave];
+            }
+
+            delete planejamentosSalvos[chave];
+          }
+
+          setPlanosLocais(planejamentosSalvos);
+        }
       }
+    } catch {
+      // Se os dados locais estiverem inválidos, a página abre
+      // com a agenda habitual.
+    } finally {
+      try {
+        const salvas: unknown = JSON.parse(localStorage.getItem("gestao-cozinha-feiras-saidas-v1") || "{}");
+        if (salvas && typeof salvas === "object" && !Array.isArray(salvas)) {
+          setSaidasLocais(salvas as Saidas);
+        }
+      } catch {
+        // Se houver dados de saída inválidos, continua com a tela disponível.
+      }
+      try {
+        const salvos: unknown = JSON.parse(localStorage.getItem("gestao-cozinha-feiras-retornos-v1") || "{}");
+        if (salvos && typeof salvos === "object" && !Array.isArray(salvos)) {
+          setRetornosLocais(salvos as Retornos);
+        }
+      } catch {
+        // O fechamento pode ser preenchido normalmente nesta sessão.
+      }
+      try {
+        const salvos: unknown = JSON.parse(localStorage.getItem("gestao-cozinha-feiras-reaproveitamentos-v1") || "{}");
+        if (salvos && typeof salvos === "object" && !Array.isArray(salvos)) {
+          setUsosLocais(salvos as Reaproveitamentos);
+        }
+      } catch {
+        // O planejamento pode ser feito nesta sessão.
+      }
+    }
+    }, 0);
 
-      return resultado;
-    }, [
-      padrao,
-      previstos,
-      temPadrao,
-    ]);
+    return () => {
+      window.clearTimeout(temporizador);
+    };
+  }, []);
 
-  const totalPadrao =
-    linhas.reduce(
-      (total, item) =>
-        total +
-        (item.padrao ?? 0),
-      0,
+  useEffect(() => {
+    if (carregando || !usuario?.id) return;
+    return escutarPlanejamentos(
+      (remotos) => {
+        setPlanejamentos(remotos);
+        setPlanosSincronizados(true);
+        setErroSincronizacao("");
+      },
+      (erro) => {
+        setPlanosSincronizados(false);
+        setErroSincronizacao(erro.message);
+      },
     );
+  }, [carregando, usuario?.id]);
 
-  const totalPrevisto =
-    linhas.reduce(
-      (total, item) =>
-        total +
-        item.previsto,
-      0,
+  useEffect(() => {
+    if (carregando || !usuario?.id) return;
+    return escutarSaidas(
+      (remotas) => {
+        setSaidas(remotas);
+        setSaidasSincronizadas(true);
+        setErroSaidas("");
+      },
+      (erro) => {
+        setSaidasSincronizadas(false);
+        setErroSaidas(erro.message);
+      },
     );
+  }, [carregando, usuario?.id]);
 
-  const variacaoTotal =
-    totalPrevisto -
-    totalPadrao;
+  useEffect(() => {
+    if (carregando || !usuario?.id) return;
+    return escutarFechamentos(
+      (remotos) => {
+        setRetornos(remotos);
+        setFechamentosSincronizados(true);
+        setErroFechamentos("");
+      },
+      (erro) => {
+        setFechamentosSincronizados(false);
+        setErroFechamentos(erro.message);
+      },
+    );
+  }, [carregando, usuario?.id]);
+
+  useEffect(() => {
+    if (carregando || !usuario?.id) return;
+    return escutarReaproveitamentos(
+      (remotos) => {
+        setReaproveitamentos(remotos);
+        setUsosSincronizados(true);
+        setErroUsos("");
+      },
+      (erro) => {
+        setUsosSincronizados(false);
+        setErroUsos(erro.message);
+      },
+    );
+  }, [carregando, usuario?.id]);
+
+  useEffect(() => {
+    if (carregando || !usuario?.id || !podeConsultarSaldo) return;
+    const uid = usuario.id;
+    const { db } = firebaseClient();
+    return onSnapshot(collection(db, "descartesFeira"), { includeMetadataChanges: true }, (snapshot) => {
+      if (snapshot.metadata.fromCache) {
+        setDescartesRemotos(null);
+        setErroDescartes("Aguardando conexão para consultar os descartes.");
+        return;
+      }
+      const itens: QuantidadesPorOrigem = Object.create(null);
+      for (const documento of snapshot.docs) {
+        const quantidade: unknown = documento.data().quantidade;
+        if (typeof quantidade !== "number" || !Number.isSafeInteger(quantidade) || quantidade < 0) {
+          setDescartesRemotos(null);
+          setErroDescartes("Há um registro de descarte inválido. Confira os dados antes de destinar sobras.");
+          return;
+        }
+        itens[documento.id] = quantidade;
+      }
+      setDescartesRemotos({ uid, itens });
+      setErroDescartes("");
+    }, (erro) => {
+      setDescartesRemotos(null);
+      setErroDescartes(
+        `Não foi possível consultar descartes e doações: ${erro.code} — ${erro.message}`,
+      );
+    });
+  }, [carregando, usuario?.id, podeConsultarSaldo]);
+
+  useEffect(() => {
+    if (carregando || !usuario?.id) return;
+    return escutarProducaoFeiras(
+      (remotos) => {
+        setProducoes(remotos);
+        setProducoesSincronizadas(true);
+        setErroProducao("");
+      },
+      (erro) => {
+        setProducoesSincronizadas(false);
+        setErroProducao(erro.message);
+      },
+    );
+  }, [carregando, usuario?.id]);
+
+  async function confirmarSaida(chave: string, itens: ItemSaida[]) {
+    if (!usuario?.perfis.includes("dono") && !usuario?.perfis.includes("producao")) {
+      throw new Error("Seu perfil não pode conferir a saída.");
+    }
+    if (!saidasSincronizadas) throw new Error("Aguarde a conexão com o Firestore.");
+    if (retornos[chave]) throw new Error("Corrija primeiro o fechamento desta feira.");
+    await salvarSaidaFirestore(
+      chave,
+      itens,
+      nomeDaFeira(chave.split(":")[1], feirasCadastradas),
+    );
+  }
+
+  async function importarSaidas() {
+    if (!usuario?.perfis.includes("dono") || !saidasSincronizadas || importandoSaidas) return;
+    const pendentes = Object.entries(saidasLocais).filter(([chave]) =>
+      !Object.prototype.hasOwnProperty.call(saidas, chave));
+    if (!window.confirm(`Importar ${pendentes.length} saída(s) antiga(s)? Os registros existentes serão preservados.`)) return;
+    setImportandoSaidas(true);
+    let importadas = 0;
+    try {
+      for (const [chave, saida] of pendentes) {
+        if (await importarSaidaLocal(chave, saida)) importadas++;
+      }
+      window.alert(`${importadas} saída(s) importada(s). A data original foi preservada no registro.`);
+    } catch (erro) {
+      window.alert(`${importadas} saída(s) importada(s). Importação interrompida: ${erro instanceof Error ? erro.message : "erro inesperado"}. Os dados locais continuam neste navegador.`);
+    } finally {
+      setImportandoSaidas(false);
+    }
+  }
+
+  async function confirmarRetorno(chave: string, itens: ItemRetorno[], versao?: string) {
+    if (!usuario?.perfis.includes("dono") && !usuario?.perfis.includes("feirantes")) {
+      throw new Error("Seu perfil não pode registrar o fechamento.");
+    }
+    if (!fechamentosSincronizados || !saidasSincronizadas) {
+      throw new Error("Aguarde a conexão com o Firestore.");
+    }
+    await salvarFechamentoFirestore(chave, itens, versao);
+  }
+
+  async function importarFechamentos() {
+    if (!usuario?.perfis.includes("dono") || !fechamentosSincronizados || importandoFechamentos) return;
+    const pendentes = Object.entries(retornosLocais).filter(([chave]) =>
+      !Object.prototype.hasOwnProperty.call(retornos, chave));
+    if (!window.confirm(`Importar ${pendentes.length} fechamento(s) deste navegador? Confirme antes que as saídas correspondentes já estão no Firestore.`)) return;
+    setImportandoFechamentos(true);
+    let importados = 0;
+    try {
+      for (const [chave, registro] of pendentes) {
+        if (await importarFechamentoLocal(chave, registro)) importados++;
+      }
+      window.alert(`${importados} fechamento(s) importado(s). Os dados locais foram preservados.`);
+    } catch (erro) {
+      window.alert(`${importados} fechamento(s) importado(s). Importação interrompida: ${erro instanceof Error ? erro.message : "erro inesperado"}. Os dados locais continuam neste navegador.`);
+    } finally {
+      setImportandoFechamentos(false);
+    }
+  }
+
+  function abrirFeira(feiraId: string) {
+    setFeiraAberta((atual) => atual === feiraId ? null : feiraId);
+  }
+
+  async function salvarPlanejamento(chave: string, itens: SaborPlanejado[]) {
+    if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode planejar feiras.");
+    if (!planosSincronizados) throw new Error("Aguarde a conexão com o Firestore.");
+    await salvarPlanejamentoFirestore(chave, itens);
+    setFeiraAberta(null);
+  }
+
+  async function planejarPadrao(feira: FeiraProgramada, chave: string) {
+    if (travaPadrao.current) return;
+    setFeedbackPadrao(null);
+    try {
+      if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode planejar feiras.");
+      if (!planosSincronizados || !saidasSincronizadas || !fechamentosSincronizados ||
+          !usosSincronizados || !producoesSincronizadas) {
+        throw new Error("Aguarde a sincronização com o Firestore.");
+      }
+      if (retornos[chave]) throw new Error("Esta feira já foi fechada.");
+      const padrao = padraoDaFeira(feira, planejamentos[chave] ?? [], dataSelecionada);
+      if (!padrao) throw new Error("Esta feira ainda não tem um planejamento padrão.");
+      const atuais = planejamentos[chave] ?? [];
+      const itens = padrao.map((sabor) => {
+        const existente = atuais.find((item) => item.id === sabor.id) ??
+          atuais.find((item) => nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome));
+        return { ...sabor, id: existente?.id ?? sabor.id, nome: existente?.nome ?? sabor.nome };
+      });
+      // Preserva os vínculos da produção e das sobras já destinadas.
+      for (const registro of producoes[chave] ?? []) {
+        const previsto = itens.find((item) => item.id === registro.saborId);
+        const produzido = (producoes[chave] ?? [])
+          .filter((item) => item.saborId === registro.saborId)
+          .reduce((total, item) => total + item.quantidade, 0);
+        if (produzido > 0 && (!previsto || produzido > previsto.quantidade)) {
+          throw new Error("O padrão é incompatível com a produção registrada. Ajuste o planejamento manualmente.");
+        }
+      }
+      for (const [origem, quantidade] of Object.entries(reaproveitamentos[chave] ?? {})) {
+        if (quantidade <= 0) continue;
+        const separador = origem.lastIndexOf("|");
+        const item = retornos[origem.slice(0, separador)]?.itens
+          .find((candidato) => candidato.saborId === origem.slice(separador + 1));
+        const previsto = item && itens.find((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
+        if (!previsto) throw new Error("Revise o reaproveitamento antes de aplicar este padrão.");
+      }
+      if (Object.prototype.hasOwnProperty.call(planejamentos, chave) || saidas[chave]) {
+        const data = chave.split(":")[0].split("-").reverse().join("/");
+        if (!window.confirm(
+          `Substituir o planejamento de ${feira.nome} em ${data} pelo padrão? Ele será salvo automaticamente.` +
+          (saidas[chave] ? " A saída poderá precisar de nova conferência." : ""),
+        )) return;
+      }
+      travaPadrao.current = true;
+      setSalvandoPadrao(chave);
+      await salvarPlanejamento(chave, itens);
+      setPlanejamentos((atual) => ({ ...atual, [chave]: itens }));
+      setFeedbackPadrao({ chave, texto: "Planejamento padrão salvo com sucesso.", erro: false });
+    } catch (erro) {
+      setFeedbackPadrao({
+        chave, erro: true,
+        texto: erro instanceof Error ? erro.message : "Não foi possível salvar o planejamento padrão.",
+      });
+    } finally {
+      travaPadrao.current = false;
+      setSalvandoPadrao(null);
+    }
+  }
+
+  async function importarPlanos() {
+    if (!usuario?.perfis.includes("dono") || !planosSincronizados || importando) return;
+    const pendentes = Object.entries(planosLocais).filter(([chave]) =>
+      !Object.prototype.hasOwnProperty.call(planejamentos, chave));
+    if (!window.confirm(`Importar ${pendentes.length} planejamento(s) deste navegador? Planos existentes no Firestore serão preservados.`)) return;
+    setImportando(true);
+    let importados = 0;
+    try {
+      for (const [chave, itens] of pendentes) {
+        if (await importarPlanejamentoLocal(chave, itens)) importados++;
+      }
+      window.alert(`${importados} planejamento(s) importado(s). Os dados locais foram preservados como cópia.`);
+    } catch (erro) {
+      window.alert(`${importados} planejamento(s) importado(s). Importação interrompida: ${erro instanceof Error ? erro.message : "erro inesperado"}. Os dados locais permanecem neste navegador.`);
+    } finally {
+      setImportando(false);
+    }
+  }
+
+  async function salvarReaproveitamento(chave: string, valores: Record<string, number>) {
+    if (!usuario?.perfis.includes("dono")) throw new Error("Somente o Dono pode destinar as sobras.");
+    if (!usosSincronizados || descartesRemotos?.uid !== usuario.id) {
+      throw new Error("Aguarde a sincronização do saldo das sobras.");
+    }
+    await salvarReaproveitamentoFirestore(chave, valores);
+    setReaproveitamentoAberto(null);
+  }
+
+  async function importarUsos() {
+    if (!usuario?.perfis.includes("dono") || !usosSincronizados || importandoUsos) return;
+    const pendentes = Object.entries(usosLocais).filter(([chave]) =>
+      !Object.prototype.hasOwnProperty.call(reaproveitamentos, chave));
+    if (!window.confirm(`Importar ${pendentes.length} reaproveitamento(s) deste navegador? Os registros do Firestore não serão substituídos.`)) return;
+    setImportandoUsos(true);
+    let importados = 0;
+    try {
+      for (const [chave, valores] of pendentes) {
+        if (await salvarReaproveitamentoFirestore(chave, valores, true)) importados++;
+      }
+      window.alert(`${importados} reaproveitamento(s) importado(s). Os dados locais foram preservados.`);
+    } catch (erro) {
+      window.alert(`${importados} reaproveitamento(s) importado(s). Importação interrompida: ${erro instanceof Error ? erro.message : "erro inesperado"}. Os dados locais continuam neste navegador.`);
+    } finally {
+      setImportandoUsos(false);
+    }
+  }
+
+  function selecionarData(dia: number) {
+    setDataSelecionada(dataLocalISO(new Date(
+      mesVisivel.getFullYear(), mesVisivel.getMonth(), dia,
+    )));
+    setCalendarioAberto(false);
+    setSaidaAberta(null);
+    setRetornoAberto(null);
+    setReaproveitamentoAberto(null);
+    setFeiraAberta(null);
+  }
+
+  function mudarMes(diferenca: number) {
+    setMesVisivel((atual) => new Date(
+      atual.getFullYear(), atual.getMonth() + diferenca, 1,
+    ));
+  }
+
+  if (carregando || !usuario) {
+    return null;
+  }
+
+  if (!planosSincronizados || !saidasSincronizadas || !fechamentosSincronizados || !usosSincronizados || !producoesSincronizadas) {
+    return (
+      <AppLayout user={usuario} title="Feiras" subtitle="Planeje os pastéis de cada feira.">
+        <div className={styles.page} role="status">
+          {erroSincronizacao || erroSaidas || erroFechamentos || erroUsos || erroProducao || "Carregando feiras do Firestore..."}
+        </div>
+      </AppLayout>
+    );
+  }
+
+  const podeConferirSaida = usuario.perfis.includes("dono") || usuario.perfis.includes("producao");
+  const podeFecharFeira = usuario.perfis.includes("dono") || usuario.perfis.includes("feirantes");
+  const modoFuncionario = usuario.perfis.includes("feirantes");
+  const podePlanejar = usuario.perfis.includes("dono");
+  const modoConsulta = usuario.perfis.includes("producao") || modoFuncionario;
+
+  const anoVisivel = mesVisivel.getFullYear();
+  const mesIndice = mesVisivel.getMonth();
+  const diasNoMes = new Date(anoVisivel, mesIndice + 1, 0).getDate();
+  const deslocamento = new Date(anoVisivel, mesIndice, 1).getDay();
+  const hojeISO = dataLocalISO(new Date());
+  const nomeMes = new Intl.DateTimeFormat("pt-BR", {
+    month: "long", year: "numeric",
+  }).format(mesVisivel);
+  const data = dataDoCampo(dataSelecionada);
+  const feiras = data ? feirasDaData(dataSelecionada, feirasCadastradas) : [];
+
+  const dataFormatada = data
+    ? new Intl.DateTimeFormat("pt-BR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      }).format(data)
+    : "";
+
+  const saldoSincronizado = descartesRemotos?.uid === usuario.id;
+  const descartes = saldoSincronizado && descartesRemotos ? descartesRemotos.itens : {};
+  const destinados = somarDestinados(reaproveitamentos);
+
+  const sobrasAnteriores = Object.entries(retornos)
+    .filter(([chave]) => chave.split(":")[0] < dataSelecionada)
+    .map(([chave, retorno]) => {
+      const [dataOrigem, feiraId] = chave.split(":");
+      const itens = retorno.itens.filter((item) => item.sobraram > 0).map((item) => {
+        const origem = chaveDaSobra(chave, item.saborId);
+        const destinado = destinados[origem] ?? 0;
+        const descartado = descartes[origem] ?? 0;
+        return { ...item, destinado, descartado, disponivel: saldoDaSobra(item.sobraram, destinado, descartado) };
+      });
+      return {
+        chave,
+        data: dataOrigem,
+        feira: nomeDaFeira(feiraId, feirasCadastradas),
+        itens,
+        total: itens.reduce((soma, item) => soma + item.sobraram, 0),
+        disponivel: itens.reduce((soma, item) => soma + item.disponivel, 0),
+      };
+    })
+    .filter((grupo) => grupo.total > 0)
+    .sort((a, b) => b.data.localeCompare(a.data) || a.feira.localeCompare(b.feira, "pt-BR"));
+  // Filtra apenas a exibição; preserva os registros usados no histórico e no planejamento.
+  const saldosSobrasProntos = saldoSincronizado && usosSincronizados;
+  const sobrasDisponiveis = saldosSobrasProntos
+    ? sobrasAnteriores.map((grupo) => ({
+        ...grupo,
+        itens: grupo.itens.filter((item) => item.disponivel > 0),
+      })).filter((grupo) => grupo.itens.length > 0)
+    : [];
+  const totalDisponivel = sobrasDisponiveis.reduce((soma, grupo) => soma + grupo.disponivel, 0);
+  const grupoAtalho = sobrasAnteriores.find((grupo) => grupo.chave === atalhoSobras?.origem);
+  const destinosAtalho = atalhoSobras && grupoAtalho && atalhoSobras.data > grupoAtalho.data
+    ? feirasDaData(atalhoSobras.data, feirasCadastradas).filter((feira) => {
+        const chave = chaveDaFeira(atalhoSobras.data, feira.id);
+        return !saidas[chave] && (planejamentos[chave] ?? []).some((sabor) =>
+          sabor.quantidade > 0 && grupoAtalho.itens.some((item) =>
+            nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome) &&
+            (item.disponivel > 0 || (reaproveitamentos[chave]?.[chaveDaSobra(grupoAtalho.chave, item.saborId)] ?? 0) > 0),
+          ),
+        );
+      })
+    : [];
+  const destinoAtalho = destinosAtalho.find((feira) => feira.id === atalhoSobras?.destinoId);
+  const chaveDestinoAtalho = atalhoSobras && destinoAtalho ? chaveDaFeira(atalhoSobras.data, destinoAtalho.id) : null;
 
   return (
     <AppLayout
-      title="Produção de pastéis"
-      subtitle="Compare a produção normal com a previsão definida pelo Dono."
+      user={usuario}
+      title="Feiras"
+      subtitle="Planeje os pastéis de cada feira."
+      headerActions={podePlanejar ? (
+        <>
+          <Button type="button" variant="secondary"
+            onClick={() => router.push("/feiras/gerenciar")}>
+            Gerenciar feiras
+          </Button>
+          <Button type="button" variant="primary"
+            onClick={() => router.push("/feiras/cadastrar")}>
+            Cadastrar feira
+          </Button>
+        </>
+      ) : undefined}
     >
-      <div
-        className={
-          styles.page
-        }
-      >
-        <Link
-          href="/producao"
-          className={
-            styles.back
-          }
-        >
-          <ArrowLeft
-            size={18}
-            aria-hidden="true"
+      <div className={styles.page}>
+        {erroDescartes && (
+          <p role="alert" style={{ color: "#b42318", overflowWrap: "anywhere" }}>
+            {erroDescartes}
+          </p>
+        )}
+        {usuario.perfis.includes("dono") && (
+          <BaixaSobras
+            key={usuario.id}
+            sincronizado={saldoSincronizado && usosSincronizados}
+            baixas={descartes}
+            lotes={Object.entries(retornos).flatMap(([chave, retorno]) => {
+              const [dataOrigem, feiraIdOrigem] = chave.split(":");
+
+              return retorno.itens.flatMap((item) => {
+                const origem = chaveDaSobra(chave, item.saborId);
+
+                const disponivel = saldoDaSobra(
+                  item.sobraram,
+                  destinados[origem] ?? 0,
+                  descartes[origem] ?? 0,
+                );
+
+                if (disponivel <= 0) return [];
+
+                return [{
+                  origem,
+                  disponivel,
+                  nome:
+                    `${nomeDaFeira(feiraIdOrigem, feirasCadastradas)} · ` +
+                    `${dataOrigem.split("-").reverse().join("/")} · ` +
+                    item.nome,
+                }];
+              });
+            })}
           />
-
-          Voltar para produção
-        </Link>
-
-        <section
-          className={
-            styles.panel
-          }
-          aria-labelledby="titulo-previsto"
-        >
-          <div
-            className={
-              styles.heading
-            }
-          >
-            <div>
-              <h2 id="titulo-previsto">
-                Planejamento de
-                pastéis
-              </h2>
-
-              <p>
-                Variação =
-                produção prevista
-                − produção padrão.
-              </p>
+        )}
+        {erroFeirasCadastradas && (
+          <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>
+            {erroFeirasCadastradas}
+          </p>
+        )}
+        <section style={{ padding: 14, border: "1px solid var(--color-border)", borderRadius: 10, background: "var(--color-surface)" }}>
+          <p>Planejamentos, produção, saídas, fechamentos e reaproveitamentos sincronizados. Cada lote mostra o saldo disponível antes de destinar a outra feira.</p>
+          {usuario.perfis.includes("dono") &&
+            Object.keys(usosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(reaproveitamentos, chave)) && (
+              <Button type="button" variant="secondary" disabled={importandoUsos} onClick={importarUsos}>
+                {importandoUsos ? "Importando usos..." : "Importar reaproveitamentos antigos deste navegador"}
+              </Button>
+            )}
+          {usuario.perfis.includes("dono") &&
+            Object.keys(retornosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(retornos, chave)) && (
+              <Button type="button" variant="secondary" disabled={importandoFechamentos} onClick={importarFechamentos}>
+                {importandoFechamentos ? "Importando fechamentos..." : "Importar fechamentos antigos deste navegador"}
+              </Button>
+            )}
+          {usuario.perfis.includes("dono") &&
+            Object.keys(planosLocais).some((chave) => !Object.prototype.hasOwnProperty.call(planejamentos, chave)) && (
+              <Button type="button" variant="secondary" disabled={importando} onClick={importarPlanos}>
+                {importando ? "Importando..." : "Importar planejamentos antigos deste navegador"}
+              </Button>
+            )}
+          {usuario.perfis.includes("dono") &&
+            Object.keys(saidasLocais).some((chave) => !Object.prototype.hasOwnProperty.call(saidas, chave)) && (
+              <Button type="button" variant="secondary" disabled={importandoSaidas} onClick={importarSaidas}>
+                {importandoSaidas ? "Importando saídas..." : "Importar saídas antigas deste navegador"}
+              </Button>
+            )}
+        </section>
+        {!modoFuncionario && (!saldosSobrasProntos || sobrasDisponiveis.length > 0) && (
+          <details aria-labelledby="titulo-sobras" style={{ minWidth: 0, padding: 16, border: "1px solid var(--color-border)", borderRadius: "var(--radius-large)", background: "var(--color-surface)" }}>
+            <summary style={{ cursor: "pointer", minHeight: 44, alignContent: "center", overflowWrap: "anywhere" }}>
+              <strong id="titulo-sobras" style={{ fontSize: 18 }}>Sobras registradas de feiras anteriores</strong>
+              <span style={{ display: "inline-block", marginInlineStart: 8 }}>Disponíveis: <strong>{saldosSobrasProntos ? totalDisponivel : "—"}</strong></span>
+            </summary>
+            <div style={{ display: "grid", gap: 12, minWidth: 0, marginTop: 12 }}>
+              <p style={{ color: "var(--color-text-secondary)" }}>Somente sobras disponíveis de feiras anteriores à data selecionada. O saldo desconta reaproveitamentos, descartes e doações. Lotes sem saldo são ocultados; o histórico permanece salvo.</p>
+              {!saldosSobrasProntos && <p role="status">{erroDescartes || "Atualizando o saldo de sobras..."}</p>}
+              {avisoSobras && <p role="status">{avisoSobras}</p>}
+              <ul style={{ display: "grid", gap: 12, minWidth: 0, margin: 0, padding: 0, listStyle: "none" }}>
+                {sobrasDisponiveis.map((grupo) => {
+                  const aberto = Boolean(sobrasDetalhadas[grupo.chave]);
+                  const dataOrigem = grupo.data.split("-").reverse().join("/");
+                  const detalhesId = `detalhes-sobras-${grupo.chave}`;
+                  return (
+                    <li key={grupo.chave} style={{ display: "grid", gap: 12, minWidth: 0, padding: 14, border: "1px solid var(--color-border)", borderRadius: "var(--radius-medium)" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div style={{ display: "grid", gap: 5, minWidth: 0, overflowWrap: "anywhere" }}>
+                          <strong>{grupo.feira} · {dataOrigem}</strong>
+                          <span>{grupo.disponivel} pastéis disponíveis</span>
+                        </div>
+                        <Button type="button" variant="secondary" aria-expanded={aberto} aria-controls={detalhesId}
+                          aria-label={`${aberto ? "Ocultar" : "Ver"} detalhes das sobras de ${grupo.feira} em ${dataOrigem}`}
+                          onClick={() => setSobrasDetalhadas((atuais) => ({ ...atuais, [grupo.chave]: !atuais[grupo.chave] }))}>
+                          {aberto ? "Ocultar detalhes" : "Ver detalhes"}
+                        </Button>
+                      </div>
+                      <div id={detalhesId} hidden={!aberto} role="region" aria-label={`Sabores que sobraram de ${grupo.feira} em ${dataOrigem}`}>
+                        {aberto && (
+                          <ul style={{ display: "grid", gap: 0, margin: 0, padding: 0, listStyle: "none" }}>
+                            {grupo.itens.map((item) => (
+                              <li key={item.saborId} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, paddingBlock: 10, borderTop: "1px solid var(--color-border)", overflowWrap: "anywhere" }}>
+                                <strong>{item.nome}</strong>
+                                <span><strong>{item.disponivel} disponíveis</strong></span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      {podePlanejar && saldoSincronizado && (grupo.disponivel > 0 || atalhoSobras?.origem === grupo.chave) && (
+                        <Button type="button" variant="secondary" aria-expanded={atalhoSobras?.origem === grupo.chave}
+                          onClick={() => {
+                            setAvisoSobras("");
+                            setReaproveitamentoAberto(null);
+                            setAtalhoSobras((atual) => atual?.origem === grupo.chave
+                              ? null : { origem: grupo.chave, data: dataSelecionada, destinoId: "" });
+                          }}>
+                          {atalhoSobras?.origem === grupo.chave ? "Fechar destino" : "Destinar sobras"}
+                        </Button>
+                      )}
+                      {saldoSincronizado && podePlanejar && atalhoSobras?.origem === grupo.chave && (
+                        <div style={{ display: "grid", minWidth: 0, gap: 10 }}>
+                          <label style={{ display: "grid", gap: 5 }}>
+                            Data de destino
+                            <input type="date" value={atalhoSobras.data}
+                              onChange={(evento) => setAtalhoSobras({ origem: grupo.chave, data: evento.target.value, destinoId: "" })} />
+                          </label>
+                          <label style={{ display: "grid", gap: 5 }}>
+                            Feira de destino
+                            <select value={destinoAtalho?.id ?? ""} disabled={destinosAtalho.length === 0}
+                              onChange={(evento) => setAtalhoSobras({ ...atalhoSobras, destinoId: evento.target.value })}>
+                              <option value="">Selecione uma feira</option>
+                              {destinosAtalho.map((feira) => <option key={feira.id} value={feira.id}>{feira.nome}</option>)}
+                            </select>
+                          </label>
+                          {destinosAtalho.length === 0 && <p>Escolha uma data posterior à origem com uma feira planejada para esses sabores e sem saída conferida.</p>}
+                          {chaveDestinoAtalho && destinoAtalho && (
+                            <ReaproveitamentoFeira key={chaveDestinoAtalho} chaveDestino={chaveDestinoAtalho}
+                              sabores={planejamentos[chaveDestinoAtalho] ?? []}
+                              retornos={retornos} usos={reaproveitamentos} destinados={destinados} descartes={descartes}
+                              origemPrioritaria={grupo.chave} feirasCadastradas={feirasCadastradas}
+                              onSalvar={async (valores) => {
+                                await salvarReaproveitamento(chaveDestinoAtalho, valores);
+                                setAtalhoSobras(null);
+                                setAvisoSobras(`Sobras atualizadas para ${destinoAtalho.nome}.`);
+                              }} />
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
+          </details>
+        )}
+        <section className={styles.intro} style={{ alignItems: "flex-start" }}>
+          <div>
+            <h2>{modoConsulta ? (dataSelecionada === hojeISO ? "Feiras de hoje" : "Feiras da data selecionada") : "Saídas programadas"}</h2>
+            <p>
+              {modoFuncionario ? "Consulte as bandejas separadas para sua feira e registre as sobras no final." : usuario.perfis.includes("producao") ? "Prepare os pastéis e confira as quantidades separadas para cada feira." : "Escolha uma data e informe a quantidade prevista por sabor em cada feira."}
+            </p>
+          </div>
 
+          <div
+            className={styles.dateField}
+            role="group"
+            aria-label="Data da feira"
+            style={{ minWidth: 0, width: "min(100%, 330px)", alignSelf: "flex-start" }}
+          >
+            <span style={{ display: "block", fontWeight: 600, marginBottom: 8 }}>{modoFuncionario ? "Consultar outra data" : "Data da feira"}</span>
+            <button
+              type="button"
+              aria-expanded={calendarioAberto}
+              aria-controls="calendario-feiras"
+              onClick={() => setCalendarioAberto((aberto) => !aberto)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, width: "100%", minHeight: 48, padding: "8px 12px", background: "var(--color-surface, white)", color: "var(--color-text-primary, #17243a)", border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 10, font: "inherit", fontWeight: 600, cursor: "pointer" }}
+            >
+              <span>{dataSelecionada.split("-").reverse().join("/")}</span>
+              <CalendarDays size={20} aria-hidden="true" />
+            </button>
+            {calendarioAberto && (
+              <div id="calendario-feiras" onKeyDown={(event) => {
+                if (event.key === "Escape") setCalendarioAberto(false);
+              }} style={{ marginTop: 12, padding: 12, border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 12, background: "var(--color-surface, white)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
+              <button type="button" onClick={() => mudarMes(-1)} aria-label="Mês anterior"
+                style={{ minWidth: 44, minHeight: 44, border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 10, background: "var(--color-surface, white)", display: "grid", placeItems: "center", cursor: "pointer" }}>
+                <ChevronLeft size={22} aria-hidden="true" />
+              </button>
+              <strong aria-live="polite" style={{ textTransform: "capitalize", textAlign: "center" }}>{nomeMes}</strong>
+              <button type="button" onClick={() => mudarMes(1)} aria-label="Próximo mês"
+                style={{ minWidth: 44, minHeight: 44, border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 10, background: "var(--color-surface, white)", display: "grid", placeItems: "center", cursor: "pointer" }}>
+                <ChevronRight size={22} aria-hidden="true" />
+              </button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 3, textAlign: "center" }}>
+              {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((dia) => (
+                <span key={dia} style={{ fontSize: 12, fontWeight: 700, paddingBlock: 5 }}>{dia}</span>
+              ))}
+              {Array.from({ length: deslocamento }, (_, index) => (
+                <span key={`vazio-${index}`} aria-hidden="true" />
+              ))}
+              {Array.from({ length: diasNoMes }, (_, index) => {
+                const dia = index + 1;
+                const dataDia = dataLocalISO(new Date(anoVisivel, mesIndice, dia));
+                const selecionado = dataDia === dataSelecionada;
+                const ehHoje = dataDia === hojeISO;
+                const nomeDia = new Intl.DateTimeFormat("pt-BR", {
+                  dateStyle: "full",
+                }).format(new Date(anoVisivel, mesIndice, dia));
+                return (
+                  <button
+                    key={dataDia}
+                    type="button"
+                    onClick={() => selecionarData(dia)}
+                    aria-label={nomeDia}
+                    aria-pressed={selecionado}
+                    title={feirasDaData(dataDia, feirasCadastradas).map((feira) => feira.nome).join(", ") || "Sem feira programada"}
+                    style={{ minWidth: 0, minHeight: 44, padding: 0, borderRadius: 9, cursor: "pointer", font: "inherit", fontWeight: selecionado || ehHoje ? 700 : 400, border: ehHoje && !selecionado ? "2px solid var(--color-primary, #1e3a5f)" : "1px solid transparent", background: selecionado ? "var(--color-primary, #1e3a5f)" : "transparent", color: selecionado ? "white" : "inherit" }}
+                  >
+                    {dia}
+                  </button>
+                );
+              })}
+            </div>
+            <button type="button" onClick={() => {
+              const hoje = new Date();
+              setMesVisivel(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
+              setDataSelecionada(dataLocalISO(hoje));
+              setCalendarioAberto(false);
+              setSaidaAberta(null);
+              setRetornoAberto(null);
+              setReaproveitamentoAberto(null);
+              setFeiraAberta(null);
+              setDetalhesAbertos(null);
+                      }} style={{ minHeight: 44, marginTop: 6, paddingInline: 12, background: "transparent", color: "var(--color-primary, #1e3a5f)", border: "1px solid var(--color-border, #d8e2ee)", borderRadius: 10, font: "inherit", cursor: "pointer" }}>
+              Ir para hoje
+            </button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section aria-labelledby="titulo-dia">
+          <h3
+            id="titulo-dia"
+            className={styles.dayTitle}
+          >
             <CalendarDays
-              size={24}
+              size={22}
               aria-hidden="true"
             />
-          </div>
+            {dataFormatada ||
+              "Selecione uma data"}
+          </h3>
 
-          <div
-            className={
-              styles.filters
-            }
-          >
-            <label htmlFor="data-pasteis">
-              Data da feira
+          {feiras.length === 0 ? (
+            <div className={styles.empty}>
+              Nenhuma feira ou evento programado
+              para este dia.
+            </div>
+          ) : (
+            <div className={styles.grid}>
+              {feiras.map((feira) => {
+                const chave = chaveDaFeira(
+                  dataSelecionada,
+                  feira.id,
+                );
 
-              <input
-                id="data-pasteis"
-                type="date"
-                value={data}
-                onChange={(
-                  event,
-                ) => {
-                  setData(
-                    event.target
-                      .value,
-                  );
-
-                  setResponsavel(
-                    "",
-                  );
-
-                  setFeiraId("");
-                }}
-              />
-            </label>
-
-            <label htmlFor="responsavel-pasteis">
-              Responsável
-
-              <select
-                id="responsavel-pasteis"
-                value={
-                  responsavel
-                }
-                onChange={(
-                  event,
-                ) => {
-                  setResponsavel(
-                    event.target
-                      .value,
-                  );
-
-                  setFeiraId("");
-                }}
-              >
-                <option value="">
-                  Todos os
-                  responsáveis
-                </option>
-
-                {responsaveis.map(
-                  (nome) => (
-                    <option
-                      key={nome}
-                      value={nome}
-                    >
-                      {nome}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-
-            <label htmlFor="feira-pasteis">
-              Feira
-
-              <select
-                id="feira-pasteis"
-                value={
-                  feiraSelecionada
-                }
-                onChange={(
-                  event,
-                ) =>
-                  setFeiraId(
-                    event.target
-                      .value,
-                  )
-                }
-                disabled={
-                  feirasFiltradas.length ===
-                  0
-                }
-              >
-                {feirasFiltradas.length ===
-                  0 && (
-                  <option value="">
-                    Nenhuma feira
-                    para este
-                    filtro
-                  </option>
-                )}
-
-                {feirasFiltradas.map(
-                  (feira) => (
-                    <option
-                      key={
-                        feira.id
-                      }
-                      value={
-                        feira.id
-                      }
-                    >
-                      {feira.nome}
-                      {feira
-                        .responsaveis
-                        .length
-                        ? ` — ${feira.responsaveis.join(" e ")}`
-                        : ""}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-          </div>
-
-          {erroFeirasCadastradas && (
-            <p
-              role="alert"
-              className={
-                styles.error
-              }
-            >
-              {
-                erroFeirasCadastradas
-              }
-            </p>
-          )}
-
-          {erro && (
-            <p
-              role="alert"
-              className={
-                styles.error
-              }
-            >
-              {erro}
-            </p>
-          )}
-
-          {carregando && (
-            <p role="status">
-              Carregando
-              planejamentos...
-            </p>
-          )}
-
-          {!carregando &&
-            !erro &&
-            !feiraSelecionada && (
-              <p>
-                Não há feira para
-                esta data e
-                responsável.
-                Confira o cadastro
-                de feiras.
-              </p>
-            )}
-
-          {!carregando &&
-            !erro &&
-            feiraSelecionada && (
-              <>
-                {!Object.prototype.hasOwnProperty.call(
+                const sabores = saboresDaFeira(
                   planejamentos,
-                  `${data}:${feiraSelecionada}`,
-                ) && (
-                  <p
-                    className={
-                      styles.notice
-                    }
+                  chave,
+                  feira.id,
+                );
+
+                const total = sabores.reduce(
+                  (soma, sabor) =>
+                    soma + sabor.quantidade,
+                  0,
+                );
+
+                const aberta =
+                  feiraAberta === feira.id;
+                const registroSaida = saidas[chave];
+                const saidaDesatualizada = Boolean(registroSaida) && (
+                  registroSaida.itens.length !== sabores.length ||
+                  sabores.some((sabor) => !registroSaida.itens.some((item) =>
+                    item.saborId === sabor.id && item.previsto === sabor.quantidade,
+                  ))
+                );
+                const conferenciaAberta = saidaAberta === chave;
+                const registroRetorno = retornos[chave];
+                const fechamentoAberto = retornoAberto === chave;
+                const usoDaFeira = reaproveitamentos[chave] ?? {};
+                const totaisReaproveitados = sabores.map((sabor) => ({
+                  nome: sabor.nome,
+                  previsto: sabor.quantidade,
+                  usado: Object.entries(usoDaFeira).reduce((soma, [origem, quantidade]) => {
+                    const separador = origem.lastIndexOf("|");
+                    const origemChave = origem.slice(0, separador);
+                    const saborOrigemId = origem.slice(separador + 1);
+                    const item = retornos[origemChave]?.itens.find((candidato) => candidato.saborId === saborOrigemId);
+                    return soma + (item && nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome) ? quantidade : 0);
+                  }, 0),
+                }));
+                const usoInvalido = Object.entries(usoDaFeira).some(([origem, quantidade]) => {
+                    const separador = origem.lastIndexOf("|");
+                    const origemChave = origem.slice(0, separador);
+                    const item = retornos[origemChave]?.itens.find((candidato) => candidato.saborId === origem.slice(separador + 1));
+                    const destinado = destinados[origem] ?? 0;
+                    return !item || !Number.isSafeInteger(quantidade) || quantidade < 0 || destinado + (descartes[origem] ?? 0) > item.sobraram ||
+                      !sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
+                  });
+                const registrosDaFeira = producoes[chave] ?? [];
+                const limitePorSabor = Object.fromEntries(sabores.map((sabor) => [
+                  sabor.id,
+                  sabor.quantidade,
+                ]));
+                const reaproveitadosPorSabor = Object.fromEntries(sabores.map(sabor => [
+                  sabor.id, totaisReaproveitados.find(item => item.nome === sabor.nome)?.usado ?? 0,
+                ]));
+                const produzidosPorSabor = Object.fromEntries(sabores.filter(sabor =>
+                  registrosDaFeira.some(registro => registro.saborId === sabor.id),
+                ).map(sabor => [sabor.id, registrosDaFeira.filter(registro => registro.saborId === sabor.id)
+                  .reduce((soma, registro) => soma + registro.quantidade, 0)]));
+                const minimoAlocado = Object.fromEntries((registroRetorno?.itens ?? []).map((item) => [
+                  item.saborId,
+                  Object.values(reaproveitamentos).reduce((soma, destino) => soma + (destino[chaveDaSobra(chave, item.saborId)] ?? 0), 0),
+                ]));
+
+                return (
+                  <article
+                    key={feira.id}
+                    className={styles.card}
                   >
-                    Esta feira está
-                    cadastrada, mas
-                    o Dono ainda não
-                    registrou a
-                    produção
-                    prevista para
-                    esta data.
-                  </p>
-                )}
+                    <span className={styles.tag}>
+                      {feira.turno ??
+                        "Horário a definir"}
+                    </span>
 
-                {padrao.length ===
-                  0 && (
-                  <p
-                    className={
-                      styles.notice
-                    }
-                  >
-                    Esta feira
-                    ainda não tem
-                    produção padrão
-                    cadastrada. A
-                    variação ficará
-                    indisponível até
-                    que o padrão
-                    seja definido.
-                  </p>
-                )}
+                    <h4>
+                      <MapPin
+                        size={22}
+                        aria-hidden="true"
+                      />
+                      {feira.nome}
+                    </h4>
 
-                <div
-                  className={
-                    styles.scroll
-                  }
-                  role="region"
-                  tabIndex={0}
-                  aria-label="Comparação da produção de pastéis"
-                >
-                  <table
-                    className={
-                      styles.table
-                    }
-                  >
-                    <thead>
-                      <tr>
-                        <th scope="col">
-                          Sabor
-                        </th>
+                    <p>
+                      <Users
+                        size={18}
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {feira.responsaveis.join(
+                          " e ",
+                        )}
+                      </span>
+                    </p>
 
-                        <th scope="col">
-                          Produção
-                          padrão
-                        </th>
+                    <strong>
+                      {sabores.length === 0
+                        ? "Nenhum sabor planejado"
+                        : `${total} pastéis previstos em ${sabores.length} sabores`}
+                    </strong>
+                    {modoConsulta && sabores.length > 0 && (
+                      <>
+                        <Button type="button" variant="secondary"
+                          aria-expanded={detalhesAbertos === chave}
+                          aria-controls={`sabores-${feira.id}`}
+                          onClick={() => setDetalhesAbertos((atual) => atual === chave ? null : chave)}>
+                          {detalhesAbertos === chave ? "Ocultar sabores" : "Ver sabores e quantidades"}
+                        </Button>
+                        {detalhesAbertos === chave && (
+                          <ul id={`sabores-${feira.id}`} style={{ width: "100%", margin: 0, padding: 0, listStyle: "none" }}>
+                            {sabores.map((sabor) => (
+                              <li key={sabor.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
+                                <span>{sabor.nome}</span><strong>{sabor.quantidade}</strong>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    )}
+                    {!modoFuncionario && totaisReaproveitados.some((item) => item.usado > 0) && (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <strong>Produção nova + sobras extras</strong>
+                        {totaisReaproveitados.filter((item) => item.usado > 0).map((item) => (
+                          <span key={item.nome}>{nomeSabor(item.nome)}: {item.previsto} de produção planejada + {item.usado} reaproveitados = {item.previsto + item.usado} previstos para levar</span>
+                        ))}
+                      </div>
+                    )}
+                    {sabores.length > 0 && registrosDaFeira.length > 0 && (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <strong>Produção registrada</strong>
+                        {sabores.map((sabor) => {
+                          const registros = registrosDaFeira.filter((item) => item.saborId === sabor.id);
+                          const totalProduzido = registros.reduce((soma, item) => soma + item.quantidade, 0);
+                          if (registros.length === 0) return null;
+                          return <span key={sabor.id}>{sabor.nome}: {totalProduzido} de {limitePorSabor[sabor.id]} a preparar
+                            {registros.filter((item) => item.quantidade > 0).length > 0 &&
+                              ` · ${registros.filter((item) => item.quantidade > 0).map((item) => `${item.funcionario}: ${item.quantidade}`).join(", ")}`}
+                          </span>;
+                        })}
+                      </div>
+                    )}
+                    {usoInvalido && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>Revise o reaproveitamento: o saldo ou o planejamento desta feira mudou.</p>}
 
-                        <th scope="col">
-                          Produção
-                          prevista
-                        </th>
+                    {registroSaida && (
+                      <span role="status" style={{ color: "var(--color-success, #158a4b)", fontWeight: 700 }}>
+                        Saída conferida: {registroSaida.itens.reduce((total, item) => total + item.separado, 0)} pastéis
+                      </span>
+                    )}
+                    {saidaDesatualizada && (
+                      <p role="status" style={{ color: "var(--color-warning, #a85b00)" }}>
+                        O planejamento mudou. Corrija e confirme a saída antes de fechar a feira.
+                      </p>
+                    )}
+                    {registroRetorno && (
+                      <span role="status" style={{ color: "var(--color-info, #2b6cb0)", fontWeight: 700 }}>
+                        Feira fechada: {registroRetorno.itens.reduce((total, item) => total + item.sobraram, 0)} pastéis guardados
+                      </span>
+                    )}
 
-                        <th scope="col">
-                          Variação
-                        </th>
-                      </tr>
-                    </thead>
+                    {podePlanejar && padraoDaFeira(feira, planejamentos[chave] ?? [], dataSelecionada) && (
+                      <Button type="button" variant="primary"
+                        disabled={salvandoPadrao !== null || Boolean(registroRetorno)}
+                        onClick={() => void planejarPadrao(feira, chave)}>
+                        {salvandoPadrao === chave ? "Salvando padrão..." : (!temPadraoCompleto(feira, dataSelecionada) ? "Aplicar padrão de Palmito/Marguerita" : "Planejar padrão da feira")}
+                      </Button>
+                    )}
+                    {podePlanejar && feedbackPadrao?.chave === chave && (
+                      <p role={feedbackPadrao.erro ? "alert" : "status"}
+                        style={{ color: feedbackPadrao.erro ? "var(--color-danger, #b42318)" : "var(--color-success, #158a4b)" }}>
+                        {feedbackPadrao.texto}
+                      </p>
+                    )}
 
-                    <tbody>
-                      {linhas.map(
-                        (item) => {
-                          const variacao =
-                            item.padrao ===
-                            null
-                              ? null
-                              : item.previsto -
-                                item.padrao;
+                    {podePlanejar && <Button
+                      type="button"
+                      variant="secondary"
+                      aria-expanded={aberta}
+                      aria-controls={
+                        aberta
+                          ? `planejamento-${feira.id}`
+                          : undefined
+                      }
+                      onClick={() =>
+                        abrirFeira(feira.id)
+                      }
+                    >
+                      {aberta
+                        ? "Fechar planejamento"
+                        : "Planejar pastéis"}
+                    </Button>}
 
-                          return (
-                            <tr
-                              key={
-                                item.id
-                              }
-                            >
-                              <th scope="row">
-                                {nomeSabor(
-                                  item.nome,
-                                )}
-                              </th>
+                    {podePlanejar && aberta && salvandoPadrao === null && (
+                      <div id={`planejamento-${feira.id}`} style={{ width: "100%", minWidth: 0 }}>
+                        {!registroRetorno && (
+                          <HistoricoPlanejamento
+                            key={`historico-${chave}`}
+                            feira={feira}
+                            data={dataSelecionada}
+                            saidas={saidas}
+                            retornos={retornos}
+                            sabores={sabores}
+                            sobras={sobrasAnteriores}
+                            usosDaFeira={usoDaFeira}
+                            saldoSincronizado={saldoSincronizado}
+                          />
+                        )}
+                        <PlanejadorSabores
+                          key={`planejador-${chave}`}
+                          sabores={sabores}
+                          bloqueado={Boolean(registroRetorno)}
+                          onSalvar={(itens) => salvarPlanejamento(chave, itens)}
+                        />
+                      </div>
+                    )}
 
-                              <td>
-                                {item.padrao ??
-                                  "—"}
-                              </td>
+                    {podePlanejar && !registroSaida && (sabores.length > 0 || Object.keys(usoDaFeira).length > 0) && (
+                      <Button type="button" variant="secondary" aria-expanded={reaproveitamentoAberto === chave}
+                        aria-controls={reaproveitamentoAberto === chave ? `reaproveitamento-${feira.id}` : undefined}
+                        disabled={!saldoSincronizado}
+                        onClick={() => {
+                          setAtalhoSobras(null);
+                          setReaproveitamentoAberto((atual) => atual === chave ? null : chave);
+                        }}>
+                        {reaproveitamentoAberto === chave ? "Fechar reaproveitamento" : "Usar pastéis da geladeira"}
+                      </Button>
+                    )}
+                    {podePlanejar && saldoSincronizado && !registroSaida && reaproveitamentoAberto === chave && (
+                      <div id={`reaproveitamento-${feira.id}`} style={{ width: "100%" }}>
+                        <ReaproveitamentoFeira key={`reaproveitamento-${chave}`} chaveDestino={chave} sabores={sabores} retornos={retornos}
+                          usos={reaproveitamentos} destinados={destinados} descartes={descartes} feirasCadastradas={feirasCadastradas}
+                          onSalvar={(valores) => salvarReaproveitamento(chave, valores)} />
+                      </div>
+                    )}
 
-                              <td>
-                                {
-                                  item.previsto
-                                }
-                              </td>
+                    {(usuario.perfis.includes("dono") || usuario.perfis.includes("producao")) && sabores.length > 0 && !registroSaida && (
+                      <Button type="button" variant="secondary" aria-expanded={producaoAberta === chave}
+                        onClick={() => setProducaoAberta((atual) => atual === chave ? null : chave)}>
+                        {producaoAberta === chave ? "Fechar produção" : "Registrar produção"}
+                      </Button>
+                    )}
+                    {(usuario.perfis.includes("dono") || usuario.perfis.includes("producao")) &&
+                      producaoAberta === chave && !registroSaida && (
+                        <RegistroProducaoFeira key={`producao-${chave}`} sabores={sabores} registros={registrosDaFeira}
+                          usuarioId={usuario.id} limitePorSabor={limitePorSabor}
+                          onSalvar={(saborId, quantidade) => salvarProducaoFeira(chave, saborId, quantidade, usuario.nome)} />
+                    )}
 
-                              <td
-                                className={
-                                  variacao !==
-                                    null &&
-                                  variacao <
-                                    0
-                                    ? styles.negative
-                                    : variacao !==
-                                          null &&
-                                        variacao >
-                                          0
-                                      ? styles.positive
-                                      : styles.neutral
-                                }
-                              >
-                                {variacao ===
-                                null
-                                  ? "—"
-                                  : variacao >
-                                      0
-                                    ? `+${variacao}`
-                                    : variacao}
-                              </td>
-                            </tr>
-                          );
-                        },
-                      )}
-                    </tbody>
-
-                    <tfoot>
-                      <tr>
-                        <th scope="row">
-                          Total
-                        </th>
-
-                        <td>
-                          {temPadrao
-                            ? totalPadrao
-                            : "—"}
-                        </td>
-
-                        <td>
-                          {
-                            totalPrevisto
-                          }
-                        </td>
-
-                        <td
-                          className={
-                            temPadrao &&
-                            variacaoTotal <
-                              0
-                              ? styles.negative
-                              : temPadrao &&
-                                  variacaoTotal >
-                                    0
-                                ? styles.positive
-                                : styles.neutral
-                          }
-                        >
-                          {!temPadrao
-                            ? "—"
-                            : variacaoTotal >
-                                0
-                              ? `+${variacaoTotal}`
-                              : variacaoTotal}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </>
-            )}
+                    {podeConferirSaida && sabores.length > 0 && (
+                      <Button
+                        type="button"
+                        variant={!registroSaida ? "primary" : "secondary"}
+                        aria-expanded={conferenciaAberta}
+                        aria-controls={conferenciaAberta ? `saida-${feira.id}` : undefined}
+                        onClick={() => {
+                          setSaidaAberta((atual) => atual === chave ? null : chave);
+                          setFeiraAberta(null);
+                        }}
+                      >
+                        {conferenciaAberta ? "Fechar conferência" : registroSaida ? "Ver saída conferida" : "Conferir saída"}
+                      </Button>
+                    )}
+                    {podeConferirSaida && conferenciaAberta && sabores.length > 0 && (
+                      <div id={`saida-${feira.id}`} style={{ width: "100%" }}>
+                        <ConferenciaSaida
+                          key={`conferencia-${chave}`}
+                          reaproveitados={reaproveitadosPorSabor}
+                          produzidos={produzidosPorSabor}
+                          nomeFeira={feira.nome}
+                          sabores={sabores}
+                          registro={registroSaida}
+                          retornoRegistrado={Boolean(registroRetorno)}
+                          onConfirmar={(itens) => confirmarSaida(chave, itens)}
+                        />
+                      </div>
+                    )}
+                    {modoFuncionario && registroSaida && (
+                      <div style={{ display: "grid", gap: 4, width: "100%" }}>
+                        <strong>Bandejas separadas pela Produção</strong>
+                        <small>Conferidas por {registroSaida.conferidoPor} em {new Date(registroSaida.conferidoEm).toLocaleString("pt-BR")}</small>
+                        {registroSaida.itens.map((item) => (
+                          <span key={item.saborId}>{item.nome}: {item.separado} pastéis</span>
+                        ))}
+                      </div>
+                    )}
+                    {registroSaida && !saidaDesatualizada && !usoInvalido && podeFecharFeira && (
+                      <Button type="button" variant={modoFuncionario && !registroRetorno ? "primary" : "secondary"}
+                        aria-expanded={fechamentoAberto}
+                        aria-controls={fechamentoAberto ? `retorno-${feira.id}` : undefined}
+                        onClick={() => {
+                          setRetornoAberto((atual) => atual === chave ? null : chave);
+                          setSaidaAberta(null);
+                          setFeiraAberta(null);
+                        }}
+                      >
+                        {fechamentoAberto ? "Fechar contagem" : registroRetorno ? "Ver fechamento" : "Contar sobras da feira"}
+                      </Button>
+                    )}
+                    {registroSaida && !saidaDesatualizada && !usoInvalido && podeFecharFeira && fechamentoAberto && (
+                      <div id={`retorno-${feira.id}`} style={{ width: "100%" }}>
+                        <FechamentoFeira
+                          key={`fechamento-${chave}`}
+                          nomeFeira={feira.nome}
+                          saida={registroSaida}
+                          retorno={registroRetorno}
+                          minimoAlocado={minimoAlocado}
+                          onConfirmar={(itens, versao) => confirmarRetorno(chave, itens, versao)}
+                        />
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
       </div>
     </AppLayout>

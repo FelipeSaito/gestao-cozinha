@@ -182,15 +182,6 @@ function ReaproveitamentoFeira({
       }
       if (quantidade > 0) proximo[origem.id] = quantidade;
     }
-    for (const sabor of sabores) {
-      const quantidade = origens.reduce((total, origem) =>
-        total + (nomeNormalizado(origem.nome) === nomeNormalizado(sabor.nome) ? (proximo[origem.id] ?? 0) : 0), 0,
-      );
-      if (quantidade > sabor.quantidade) {
-        setErro(`O reaproveitamento de ${sabor.nome} supera os ${sabor.quantidade} pastéis previstos para esta feira.`);
-        return;
-      }
-    }
     if (origens.some((origem) =>
       (proximo[origem.id] ?? 0) > 0 &&
       !sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(origem.nome)),
@@ -211,7 +202,8 @@ function ReaproveitamentoFeira({
 
   return (
     <div style={{ display: "grid", gap: 12, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
-      <h5 style={{ fontSize: 16 }}>Pastéis da geladeira para esta feira</h5>
+      <h5 style={{ fontSize: 16 }}>Acrescentar sobras à saída desta feira</h5>
+      <p>As sobras são extras: não reduzem a produção planejada. O total para levar será a produção nova mais o reaproveitamento.</p>
       {origemPrioritaria && <p>O lote escolhido aparece primeiro entre os sabores compatíveis.</p>}
       {destinoMudou && <p role="alert">Este destino foi alterado em outro dispositivo. Feche e abra novamente para revisar os valores atuais.</p>}
       {origens.length === 0 ? <p>Não há saldo disponível de sobras para os sabores planejados.</p> : <>
@@ -588,26 +580,37 @@ function dataDoCampo(valor: string): Date | null {
 
 function ConferenciaSaida({
   sabores,
+  reaproveitados,
+  produzidos,
   registro,
   nomeFeira,
   retornoRegistrado,
   onConfirmar,
 }: {
   sabores: SaborPlanejado[];
+  reaproveitados: Record<string, number>;
+  produzidos: Record<string, number>;
   registro?: RegistroSaida;
   nomeFeira: string;
   retornoRegistrado: boolean;
   onConfirmar: (itens: ItemSaida[]) => Promise<void>;
 }) {
+  const assinatura = JSON.stringify(sabores.map(sabor => [sabor.id, sabor.quantidade, reaproveitados[sabor.id] ?? 0, produzidos[sabor.id] ?? null]));
+  const [assinaturaAoAbrir] = useState(assinatura);
+  const contextoMudou = assinatura !== assinaturaAoAbrir;
+  const novaProducao = (sabor: SaborPlanejado) => produzidos[sabor.id] ?? sabor.quantidade;
+  const totalParaLevar = (sabor: SaborPlanejado) => novaProducao(sabor) + (reaproveitados[sabor.id] ?? 0);
   const [editando, setEditando] = useState(!registro);
   const [quantidades, setQuantidades] = useState<Record<string, string>>(() =>
-    Object.fromEntries(sabores.map((sabor) => [sabor.id, String(sabor.quantidade)])),
+    Object.fromEntries(sabores.map((sabor) => [sabor.id, String(totalParaLevar(sabor))])),
   );
   const [divergenciaRevisada, setDivergenciaRevisada] = useState(false);
   const [erroSaida, setErroSaida] = useState("");
   const [salvandoSaida, setSalvandoSaida] = useState(false);
 
   async function confirmar() {
+    if (salvandoSaida) return;
+    if (contextoMudou) { setErroSaida("A produção, o planejamento ou as sobras mudaram. Feche e reabra a conferência para revisar os totais atualizados."); return; }
     const itens = sabores.map((sabor) => ({
       saborId: sabor.id,
       nome: sabor.nome,
@@ -623,7 +626,7 @@ function ConferenciaSaida({
       return;
     }
 
-    if (itens.some((item) => item.previsto !== item.separado) && !divergenciaRevisada) {
+    if (itens.some((item) => item.separado !== totalParaLevar(sabores.find(sabor => sabor.id === item.saborId)!)) && !divergenciaRevisada) {
       setErroSaida("Revise as diferenças e marque a confirmação antes de salvar.");
       return;
     }
@@ -655,7 +658,7 @@ function ConferenciaSaida({
         <Button type="button" variant="secondary" disabled={retornoRegistrado} onClick={() => {
           setQuantidades(Object.fromEntries(sabores.map((sabor) => [
             sabor.id,
-            String(registro.itens.find((item) => item.saborId === sabor.id)?.separado ?? sabor.quantidade),
+            String(registro.itens.find((item) => item.saborId === sabor.id)?.separado ?? totalParaLevar(sabor)),
           ])));
           setDivergenciaRevisada(false);
           setEditando(true);
@@ -666,16 +669,17 @@ function ConferenciaSaida({
 
   const temDiferenca = sabores.some((sabor) =>
     quantidades[sabor.id]?.trim() !== "" &&
-    Number(quantidades[sabor.id]) !== sabor.quantidade
+    Number(quantidades[sabor.id]) !== totalParaLevar(sabor)
   );
 
   return (
     <div style={{ display: "grid", gap: 14, width: "100%", padding: 14, border: "1px solid var(--color-border, #dfe5ec)", borderRadius: 12 }}>
       <h5 style={{ fontSize: 16 }}>Conferir saída para {nomeFeira}</h5>
-      <p>Informe o que foi colocado na pirua. Zero significa que o sabor não saiu.</p>
+      <p>Confira o total colocado na pirua: produção nova mais sobras acrescentadas. Zero significa que o sabor não saiu. O planejamento original continua preservado.</p>
+      <strong>Total de referência para levar: {sabores.reduce((soma, sabor) => soma + totalParaLevar(sabor), 0)} pastéis</strong>
       {sabores.map((sabor) => (
         <label key={sabor.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <span><strong>{sabor.nome}</strong><br /><small>Previstos: {sabor.quantidade}</small></span>
+          <span><strong>{sabor.nome}</strong><br /><small>Produção {produzidos[sabor.id] === undefined ? "planejada" : "registrada"}: {novaProducao(sabor)} + sobras: {reaproveitados[sabor.id] ?? 0} = {totalParaLevar(sabor)} para levar</small></span>
           <span style={{ display: "grid", gap: 4 }}>
             <span>Separados</span>
             <input type="number" min={0} step={1} inputMode="numeric"
@@ -694,11 +698,12 @@ function ConferenciaSaida({
           <input type="checkbox" checked={divergenciaRevisada}
             onChange={(event) => setDivergenciaRevisada(event.target.checked)}
             style={{ width: 22, height: 22, flexShrink: 0 }} />
-          Conferi as diferenças entre o previsto e o separado.
+          Conferi as diferenças entre produção + sobras e o total separado.
         </label>
       )}
+      {contextoMudou && <p role="alert">Os totais mudaram. Feche e reabra a conferência antes de salvar.</p>}
       {erroSaida && <p role="alert" style={{ color: "var(--color-danger, #b42318)" }}>{erroSaida}</p>}
-      <Button type="button" variant="primary" disabled={salvandoSaida} onClick={confirmar}>
+      <Button type="button" variant="primary" disabled={salvandoSaida || contextoMudou} onClick={confirmar}>
         {salvandoSaida ? "Salvando..." : "Confirmar saída"}
       </Button>
       {registro && <Button type="button" variant="secondary" onClick={() => setEditando(false)}>Cancelar correção</Button>}
@@ -879,6 +884,7 @@ export default function FeirasPage() {
     origem: string; data: string; destinoId: string;
   } | null>(null);
   const [avisoSobras, setAvisoSobras] = useState("");
+  const [mostrarSobrasAntigas, setMostrarSobrasAntigas] = useState(false);
   const podeConsultarSaldo = Boolean(usuario?.perfis.some((perfil) => perfil === "dono" || perfil === "producao"));
   const [retornosLocais, setRetornosLocais] = useState<Retornos>({});
   const [fechamentosSincronizados, setFechamentosSincronizados] = useState(false);
@@ -1189,7 +1195,6 @@ export default function FeirasPage() {
           throw new Error("O padrão é incompatível com a produção registrada. Ajuste o planejamento manualmente.");
         }
       }
-      const reaproveitados: Record<string, number> = {};
       for (const [origem, quantidade] of Object.entries(reaproveitamentos[chave] ?? {})) {
         if (quantidade <= 0) continue;
         const separador = origem.lastIndexOf("|");
@@ -1197,15 +1202,6 @@ export default function FeirasPage() {
           .find((candidato) => candidato.saborId === origem.slice(separador + 1));
         const previsto = item && itens.find((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
         if (!previsto) throw new Error("Revise o reaproveitamento antes de aplicar este padrão.");
-        reaproveitados[previsto.id] = (reaproveitados[previsto.id] ?? 0) + quantidade;
-      }
-      for (const item of itens) {
-        const produzido = (producoes[chave] ?? [])
-          .filter((registro) => registro.saborId === item.id)
-          .reduce((total, registro) => total + registro.quantidade, 0);
-        if (produzido + (reaproveitados[item.id] ?? 0) > item.quantidade) {
-          throw new Error("A produção e o reaproveitamento superam o padrão. Ajuste o planejamento manualmente.");
-        }
       }
       if (Object.prototype.hasOwnProperty.call(planejamentos, chave) || saidas[chave]) {
         const data = chave.split(":")[0].split("-").reverse().join("/");
@@ -1337,8 +1333,8 @@ export default function FeirasPage() {
   const descartes = saldoSincronizado && descartesRemotos ? descartesRemotos.itens : {};
   const destinados = somarDestinados(reaproveitamentos);
 
-  const sobrasAnteriores = Object.entries(retornos)
-    .filter(([chave]) => chave.split(":")[0] < dataSelecionada)
+  const sobrasRegistradas = Object.entries(retornos)
+    .filter(([chave]) => chave.split(":")[0] <= dataSelecionada)
     .map(([chave, retorno]) => {
       const [dataOrigem, feiraId] = chave.split(":");
       const itens = retorno.itens.filter((item) => item.sobraram > 0).map((item) => {
@@ -1358,16 +1354,27 @@ export default function FeirasPage() {
     })
     .filter((grupo) => grupo.total > 0)
     .sort((a, b) => b.data.localeCompare(a.data) || a.feira.localeCompare(b.feira, "pt-BR"));
+  const sobrasAnteriores = sobrasRegistradas.filter(grupo => grupo.data < dataSelecionada);
   // Filtra apenas a exibição; preserva os registros usados no histórico e no planejamento.
-  const saldosSobrasProntos = saldoSincronizado && usosSincronizados;
+  const saldosSobrasProntos = saldoSincronizado && usosSincronizados && fechamentosSincronizados;
   const sobrasDisponiveis = saldosSobrasProntos
-    ? sobrasAnteriores.map((grupo) => ({
+    ? sobrasRegistradas.map((grupo) => ({
         ...grupo,
         itens: grupo.itens.filter((item) => item.disponivel > 0),
       })).filter((grupo) => grupo.itens.length > 0)
     : [];
   const totalDisponivel = sobrasDisponiveis.reduce((soma, grupo) => soma + grupo.disponivel, 0);
-  const grupoAtalho = sobrasAnteriores.find((grupo) => grupo.chave === atalhoSobras?.origem);
+  const podeOcultarSobrasAntigas = usuario.perfis.includes("dono");
+  // Usa a data da feira, inclusive quando o último fechamento não teve sobras.
+  // Não retorna às sobras de dias antigos se o dia mais recente ficou sem saldo.
+  const ultimaDataFechada = Object.keys(retornos).map(chave => chave.split(":")[0])
+    .filter(data => data <= dataSelecionada).sort().at(-1) ?? "";
+  const gruposAntigos = sobrasDisponiveis.filter(grupo => grupo.data < ultimaDataFechada);
+  const sobrasExibidas = podeOcultarSobrasAntigas && mostrarSobrasAntigas
+    ? sobrasDisponiveis : sobrasDisponiveis.filter(grupo => grupo.data === ultimaDataFechada);
+  const totalExibido = sobrasExibidas.reduce((soma, grupo) => soma + grupo.disponivel, 0);
+  const totalAntigo = gruposAntigos.reduce((soma, grupo) => soma + grupo.disponivel, 0);
+  const grupoAtalho = sobrasRegistradas.find((grupo) => grupo.chave === atalhoSobras?.origem);
   const destinosAtalho = atalhoSobras && grupoAtalho && atalhoSobras.data > grupoAtalho.data
     ? feirasDaData(atalhoSobras.data, feirasCadastradas).filter((feira) => {
         const chave = chaveDaFeira(atalhoSobras.data, feira.id);
@@ -1469,18 +1476,33 @@ export default function FeirasPage() {
               </Button>
             )}
         </section>
-        {!modoFuncionario && (!saldosSobrasProntos || sobrasDisponiveis.length > 0) && (
+        {!modoFuncionario && (!saldosSobrasProntos || sobrasDisponiveis.length > 0 || ultimaDataFechada !== "") && (
           <details aria-labelledby="titulo-sobras" style={{ minWidth: 0, padding: 16, border: "1px solid var(--color-border)", borderRadius: "var(--radius-large)", background: "var(--color-surface)" }}>
             <summary style={{ cursor: "pointer", minHeight: 44, alignContent: "center", overflowWrap: "anywhere" }}>
               <strong id="titulo-sobras" style={{ fontSize: 18 }}>Sobras registradas de feiras anteriores</strong>
-              <span style={{ display: "inline-block", marginInlineStart: 8 }}>Disponíveis: <strong>{saldosSobrasProntos ? totalDisponivel : "—"}</strong></span>
+              <span style={{ display: "inline-block", marginInlineStart: 8 }}>Disponíveis na lista: <strong>{saldosSobrasProntos ? totalExibido : "—"}</strong></span>
             </summary>
             <div style={{ display: "grid", gap: 12, minWidth: 0, marginTop: 12 }}>
-              <p style={{ color: "var(--color-text-secondary)" }}>Somente sobras disponíveis de feiras anteriores à data selecionada. O saldo desconta reaproveitamentos, descartes e doações. Lotes sem saldo são ocultados; o histórico permanece salvo.</p>
+              <p style={{ color: "var(--color-text-secondary)" }}>Sobras do último dia com fechamento registrado até a data selecionada. Ao fechar uma feira de um dia mais recente, as anteriores ficam ocultas. O saldo desconta reaproveitamentos, descartes e doações. Lotes sem saldo são ocultados; o histórico permanece salvo.</p>
               {!saldosSobrasProntos && <p role="status">{erroDescartes || "Atualizando o saldo de sobras..."}</p>}
+              {podeOcultarSobrasAntigas && saldosSobrasProntos && (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <p>{mostrarSobrasAntigas ? "Mostrando todas as datas até a selecionada." : ultimaDataFechada ? `Último dia com fechamento: ${ultimaDataFechada.split("-").reverse().join("/")}.` : "Nenhum fechamento registrado até a data selecionada."}</p>
+                  <Button type="button" variant="secondary" aria-pressed={mostrarSobrasAntigas}
+                    onClick={() => {
+                      setMostrarSobrasAntigas(atual => !atual);
+                      setAtalhoSobras(null);
+                      setAvisoSobras("");
+                    }}>
+                    {mostrarSobrasAntigas ? "Mostrar somente o último dia fechado" : `Mostrar feiras mais antigas (${gruposAntigos.length})`}
+                  </Button>
+                  {!mostrarSobrasAntigas && gruposAntigos.length > 0 && <p role="status">{gruposAntigos.length} feira(s) mais antiga(s) ocultada(s), com {totalAntigo} pastéis. Total de todas as datas: {totalDisponivel}. Ocultar não descarta nem destina as sobras.</p>}
+                  {sobrasExibidas.length === 0 && <p>Nenhuma sobra disponível no último dia fechado. Use o botão acima para consultar as datas mais antigas.</p>}
+                </div>
+              )}
               {avisoSobras && <p role="status">{avisoSobras}</p>}
               <ul style={{ display: "grid", gap: 12, minWidth: 0, margin: 0, padding: 0, listStyle: "none" }}>
-                {sobrasDisponiveis.map((grupo) => {
+                {sobrasExibidas.map((grupo) => {
                   const aberto = Boolean(sobrasDetalhadas[grupo.chave]);
                   const dataOrigem = grupo.data.split("-").reverse().join("/");
                   const detalhesId = `detalhes-sobras-${grupo.chave}`;
@@ -1706,20 +1728,26 @@ export default function FeirasPage() {
                     return soma + (item && nomeNormalizado(item.nome) === nomeNormalizado(sabor.nome) ? quantidade : 0);
                   }, 0),
                 }));
-                const usoInvalido = totaisReaproveitados.some((item) => item.usado > item.previsto) ||
-                  Object.entries(usoDaFeira).some(([origem, quantidade]) => {
+                const usoInvalido = Object.entries(usoDaFeira).some(([origem, quantidade]) => {
                     const separador = origem.lastIndexOf("|");
                     const origemChave = origem.slice(0, separador);
                     const item = retornos[origemChave]?.itens.find((candidato) => candidato.saborId === origem.slice(separador + 1));
                     const destinado = destinados[origem] ?? 0;
-                    return !item || quantidade < 0 || destinado + (descartes[origem] ?? 0) > item.sobraram ||
+                    return !item || !Number.isSafeInteger(quantidade) || quantidade < 0 || destinado + (descartes[origem] ?? 0) > item.sobraram ||
                       !sabores.some((sabor) => nomeNormalizado(sabor.nome) === nomeNormalizado(item.nome));
                   });
                 const registrosDaFeira = producoes[chave] ?? [];
                 const limitePorSabor = Object.fromEntries(sabores.map((sabor) => [
                   sabor.id,
-                  Math.max(0, sabor.quantidade - (totaisReaproveitados.find((item) => item.nome === sabor.nome)?.usado ?? 0)),
+                  sabor.quantidade,
                 ]));
+                const reaproveitadosPorSabor = Object.fromEntries(sabores.map(sabor => [
+                  sabor.id, totaisReaproveitados.find(item => item.nome === sabor.nome)?.usado ?? 0,
+                ]));
+                const produzidosPorSabor = Object.fromEntries(sabores.filter(sabor =>
+                  registrosDaFeira.some(registro => registro.saborId === sabor.id),
+                ).map(sabor => [sabor.id, registrosDaFeira.filter(registro => registro.saborId === sabor.id)
+                  .reduce((soma, registro) => soma + registro.quantidade, 0)]));
                 const minimoAlocado = Object.fromEntries((registroRetorno?.itens ?? []).map((item) => [
                   item.saborId,
                   Object.values(reaproveitamentos).reduce((soma, destino) => soma + (destino[chaveDaSobra(chave, item.saborId)] ?? 0), 0),
@@ -1781,9 +1809,9 @@ export default function FeirasPage() {
                     )}
                     {!modoFuncionario && totaisReaproveitados.some((item) => item.usado > 0) && (
                       <div style={{ display: "grid", gap: 4 }}>
-                        <strong>Da geladeira / a preparar</strong>
+                        <strong>Produção nova + sobras extras</strong>
                         {totaisReaproveitados.filter((item) => item.usado > 0).map((item) => (
-                          <span key={item.nome}>{item.nome}: {item.usado} da geladeira + {item.previsto - item.usado} a preparar = {item.previsto} previstos</span>
+                          <span key={item.nome}>{nomeSabor(item.nome)}: {item.previsto} de produção planejada + {item.usado} reaproveitados = {item.previsto + item.usado} previstos para levar</span>
                         ))}
                       </div>
                     )}
@@ -1925,6 +1953,8 @@ export default function FeirasPage() {
                       <div id={`saida-${feira.id}`} style={{ width: "100%" }}>
                         <ConferenciaSaida
                           key={`conferencia-${chave}`}
+                          reaproveitados={reaproveitadosPorSabor}
+                          produzidos={produzidosPorSabor}
                           nomeFeira={feira.nome}
                           sabores={sabores}
                           registro={registroSaida}
